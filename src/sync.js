@@ -45,8 +45,17 @@ async function buildAttempt({ repo, token, bookData, baseTreeSha, remoteTreeSha,
     const remoteChanged = remoteEntry?.sha !== baseEntry?.sha;
     const localChanged = localSha !== baseEntry?.sha;
 
-    if (!localChanged) {
-      mergedFiles.set(path, local); // nothing to do on this path either way
+    if (!localChanged && !remoteChanged) {
+      mergedFiles.set(path, local); // identical everywhere, nothing to do
+      continue;
+    }
+    if (!localChanged && remoteChanged) {
+      // Only remote changed this path -- adopt remote's content. Without
+      // this branch, "local" here is just stale base content, and setting
+      // it would silently revert remote's change and push a commit doing
+      // so -- a real, confirmed data-loss bug caught in final review.
+      const remoteFile = await fetchRemoteFile({ repo, token, remoteTreeByPath, path });
+      mergedFiles.set(path, remoteFile ?? local);
       continue;
     }
     if (localChanged && !remoteChanged) {

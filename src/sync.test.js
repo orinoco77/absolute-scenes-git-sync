@@ -9,6 +9,13 @@ function makeBook(title = 'Book', sceneContent = 'prose') {
   };
 }
 
+// Returns a copy of `book` with one illustration attached, so tests can
+// exercise buildAttempt's binary/illustration merge branch alongside the
+// scene/book.json coverage above.
+function withIllustration(book, imageBase64) {
+  return { ...book, illustrations: [{ id: 'illus1', imageData: `data:image/png;base64,${imageBase64}` }] };
+}
+
 function fakeCache() {
   const store = new Map();
   return {
@@ -71,13 +78,20 @@ test('fast-forward push: remote unchanged since lastSyncCommitSha, no merge need
   apiClient.getTree.mockResolvedValue([
     { path: 'book.json', type: 'blob', sha: 'old-book-json-sha' },
     { path: 'scenes/sc1.md', type: 'blob', sha: 'old-scene-sha' },
+    { path: 'illustrations/illus1.png', type: 'blob', sha: 'old-illustration-sha' },
   ]);
   apiClient.createBlob.mockResolvedValue({ sha: 'new-blob-sha' });
   apiClient.createTree.mockResolvedValue({ sha: 'new-tree-sha' });
   apiClient.createCommit.mockResolvedValue({ sha: 'new-commit-sha' });
   apiClient.updateRef.mockResolvedValue({ ok: true });
 
-  const book = makeBook('Edited Title');
+  // Quadrant 2 ("only local changed") exercised for all three path kinds at
+  // once: base and remote tree entries above are identical fake shas that
+  // no real computed sha will ever match, so book.json, the scene, and the
+  // illustration all register as locally-changed-only and should be pushed
+  // as-is, unmerged.
+  const illustrationBase64 = utf8ToBase64('local-image-bytes');
+  const book = withIllustration(makeBook('Edited Title'), illustrationBase64);
   const result = await pushSync({
     repo: 'o/r', token: 't', branch: 'main', bookData: book,
     lastSyncCommitSha: 'sync-sha', cache: fakeCache(), author: { name: 'A', email: 'a@x.com' },
@@ -85,7 +99,11 @@ test('fast-forward push: remote unchanged since lastSyncCommitSha, no merge need
 
   expect(result.commitSha).toBe('new-commit-sha');
   expect(result.conflicts).toEqual([]);
+  expect(result.bookData.illustrations[0].imageData).toBe(`data:image/png;base64,${illustrationBase64}`);
   expect(apiClient.updateRef).toHaveBeenCalledWith(expect.objectContaining({ sha: 'new-commit-sha', force: false }));
+
+  const illustrationBlobCall = apiClient.createBlob.mock.calls.find(([args]) => args.encoding === 'base64' && args.content === illustrationBase64);
+  expect(illustrationBlobCall).toBeDefined();
 });
 
 test('no-op guard: nothing actually changed relative to remote -- no blob/tree/commit created', async () => {
@@ -93,7 +111,10 @@ test('no-op guard: nothing actually changed relative to remote -- no blob/tree/c
   apiClient.getRef.mockResolvedValue({ sha: 'sync-sha' });
   apiClient.getCommit.mockResolvedValue({ tree: { sha: 'remote-tree-sha' }, parents: [] });
 
-  const book = makeBook('Same Title');
+  // Includes an illustration so this quadrant-1 ("neither side changed")
+  // coverage spans scenes/*.md, book.json, AND a binary path -- the binary
+  // merge branch had zero test coverage before this fix.
+  const book = withIllustration(makeBook('Same Title'), utf8ToBase64('same-image-bytes'));
   const files = projectBook(book);
   const remoteEntries = [];
   for (const [path, { content, encoding }] of files) {
@@ -270,6 +291,191 @@ test('genuine 3-way merge: book.json metadata changed on both sides, merges with
   // in pushSync favors local on a genuine conflict.
   expect(result.bookData.title).toBe('Local Title');
   expect(apiClient.updateRef).toHaveBeenCalledWith(expect.objectContaining({ sha: 'new-commit-sha' }));
+});
+
+test('quadrant 3 regression: local left a scene untouched, remote changed it -- remote content is adopted, not reverted', async () => {
+  // This is the regression test for the Critical bug caught in final
+  // review: buildAttempt's original branching set `mergedFiles.set(path,
+  // local)` whenever `!localChanged`, with no case for "only remote
+  // changed" -- so an untouched-locally scene that a collaborator had
+  // edited on remote would be silently reverted to base/local's stale
+  // content and pushed as a real commit doing so. Mixes in an
+  // only-local-changed book.json title so the test also exercises a real
+  // push (not just the no-op path) alongside the untouched-but-remote-
+  // changed scene.
+  const baseSceneContent = 'Chapter opens quietly.\nA door creaks.';
+  const localSceneContent = baseSceneContent; // untouched locally
+  const remoteSceneContent = baseSceneContent + '\nA collaborator added this line remotely.';
+
+  const baseBook = makeBook('Base Title', baseSceneContent);
+  const localBook = makeBook('Local Title', localSceneContent); // only the title changed locally
+
+  const bookJsonBaseContent = projectBook(baseBook).get('book.json').content; // same content on remote -- title untouched there
+  const sceneBaseSha = await computeGitBlobSha(baseSceneContent, 'utf-8');
+  const sceneRemoteSha = await computeGitBlobSha(remoteSceneContent, 'utf-8');
+  const bookJsonBaseSha = await computeGitBlobSha(bookJsonBaseContent, 'utf-8');
+
+  apiClient.compareCommits.mockResolvedValue({ aheadBy: 1, behindBy: 1, mergeBaseSha: 'base-commit-sha' });
+  apiClient.getRef.mockResolvedValue({ sha: 'remote-commit-sha' });
+  apiClient.getCommit.mockImplementation(async ({ sha }) => {
+    if (sha === 'remote-commit-sha') return { tree: { sha: 'remote-tree-sha' }, parents: ['base-commit-sha'] };
+    if (sha === 'base-commit-sha') return { tree: { sha: 'base-tree-sha' }, parents: [] };
+    throw new Error(`unexpected getCommit sha: ${sha}`);
+  });
+  apiClient.getTree.mockImplementation(async ({ sha }) => {
+    if (sha === 'remote-tree-sha') {
+      return [
+        { path: 'book.json', type: 'blob', sha: bookJsonBaseSha }, // unchanged remotely
+        { path: 'scenes/sc1.md', type: 'blob', sha: sceneRemoteSha }, // changed remotely
+      ];
+    }
+    if (sha === 'base-tree-sha') {
+      return [
+        { path: 'book.json', type: 'blob', sha: bookJsonBaseSha },
+        { path: 'scenes/sc1.md', type: 'blob', sha: sceneBaseSha },
+      ];
+    }
+    throw new Error(`unexpected getTree sha: ${sha}`);
+  });
+  apiClient.getBlob.mockImplementation(async ({ sha }) => {
+    if (sha === sceneRemoteSha) return { content: utf8ToBase64(remoteSceneContent), encoding: 'base64' };
+    throw new Error(`unexpected getBlob sha: ${sha}`);
+  });
+  apiClient.createBlob.mockResolvedValue({ sha: 'new-blob-sha' });
+  apiClient.createTree.mockResolvedValue({ sha: 'new-tree-sha' });
+  apiClient.createCommit.mockResolvedValue({ sha: 'new-commit-sha' });
+  apiClient.updateRef.mockResolvedValue({ ok: true });
+
+  const result = await pushSync({
+    repo: 'o/r', token: 't', branch: 'main', bookData: localBook,
+    lastSyncCommitSha: 'sync-sha', cache: fakeCache(), author: { name: 'A', email: 'a@x.com' },
+  });
+
+  // The critical assertion: remote's edit survives, it is not reverted.
+  expect(result.bookData.chapters[0].scenes[0].content).toBe(remoteSceneContent);
+  // The caller's own, unrelated local edit (the title) still goes through.
+  expect(result.bookData.title).toBe('Local Title');
+  expect(result.commitSha).toBe('new-commit-sha');
+
+  // The pushed tree must not contain a scenes/sc1.md entry reverting it back
+  // to base/local's stale content -- adopting remote's own existing content
+  // for that path needs no new blob, so it should be entirely absent from
+  // the tree entries sent to createTree (the base_tree carries it forward).
+  const treeCall = apiClient.createTree.mock.calls[0][0];
+  expect(treeCall.entries.some(e => e.path === 'scenes/sc1.md')).toBe(false);
+});
+
+test('quadrant 3 regression: local left an illustration untouched, remote changed it -- remote content is adopted, not reverted, no-op push', async () => {
+  const baseImage = utf8ToBase64('base-image-bytes');
+  const localImage = baseImage; // untouched locally
+  const remoteImage = utf8ToBase64('remote-image-bytes');
+
+  const book = withIllustration(makeBook('Same Title'), localImage);
+  const bookJsonContent = projectBook(book).get('book.json').content;
+  const bookJsonSha = await computeGitBlobSha(bookJsonContent, 'utf-8');
+  const sceneSha = await computeGitBlobSha('prose', 'utf-8');
+  const baseIllustrationSha = await computeGitBlobSha(baseImage, 'base64');
+  const remoteIllustrationSha = await computeGitBlobSha(remoteImage, 'base64');
+
+  apiClient.compareCommits.mockResolvedValue({ aheadBy: 1, behindBy: 1, mergeBaseSha: 'base-commit-sha' });
+  apiClient.getRef.mockResolvedValue({ sha: 'remote-commit-sha' });
+  apiClient.getCommit.mockImplementation(async ({ sha }) => {
+    if (sha === 'remote-commit-sha') return { tree: { sha: 'remote-tree-sha' }, parents: ['base-commit-sha'] };
+    if (sha === 'base-commit-sha') return { tree: { sha: 'base-tree-sha' }, parents: [] };
+    throw new Error(`unexpected getCommit sha: ${sha}`);
+  });
+  apiClient.getTree.mockImplementation(async ({ sha }) => {
+    if (sha === 'remote-tree-sha') {
+      return [
+        { path: 'book.json', type: 'blob', sha: bookJsonSha },
+        { path: 'scenes/sc1.md', type: 'blob', sha: sceneSha },
+        { path: 'illustrations/illus1.png', type: 'blob', sha: remoteIllustrationSha }, // changed remotely
+      ];
+    }
+    if (sha === 'base-tree-sha') {
+      return [
+        { path: 'book.json', type: 'blob', sha: bookJsonSha },
+        { path: 'scenes/sc1.md', type: 'blob', sha: sceneSha },
+        { path: 'illustrations/illus1.png', type: 'blob', sha: baseIllustrationSha },
+      ];
+    }
+    throw new Error(`unexpected getTree sha: ${sha}`);
+  });
+  apiClient.getBlob.mockImplementation(async ({ sha }) => {
+    if (sha === remoteIllustrationSha) return { content: remoteImage, encoding: 'base64' };
+    throw new Error(`unexpected getBlob sha: ${sha}`);
+  });
+  apiClient.createBlob.mockResolvedValue({ sha: 'new-blob-sha' });
+  apiClient.createTree.mockResolvedValue({ sha: 'new-tree-sha' });
+  apiClient.createCommit.mockResolvedValue({ sha: 'new-commit-sha' });
+  apiClient.updateRef.mockResolvedValue({ ok: true });
+
+  const result = await pushSync({
+    repo: 'o/r', token: 't', branch: 'main', bookData: book,
+    lastSyncCommitSha: 'sync-sha', cache: fakeCache(), author: { name: 'A', email: 'a@x.com' },
+  });
+
+  expect(result.bookData.illustrations[0].imageData).toBe(`data:image/png;base64,${remoteImage}`);
+  // Every path resolves to exactly what's already on remote -- a true no-op.
+  expect(apiClient.createBlob).not.toHaveBeenCalled();
+  expect(apiClient.updateRef).not.toHaveBeenCalled();
+  expect(result.commitSha).toBe('remote-commit-sha');
+});
+
+test('quadrant 4: an illustration changed on both sides -- remote wins (binary conflicts have no merge strategy)', async () => {
+  const baseImage = utf8ToBase64('base-image-bytes');
+  const localImage = utf8ToBase64('local-image-bytes');
+  const remoteImage = utf8ToBase64('remote-image-bytes');
+
+  const book = withIllustration(makeBook('Same Title'), localImage);
+  const bookJsonContent = projectBook(book).get('book.json').content;
+  const bookJsonSha = await computeGitBlobSha(bookJsonContent, 'utf-8');
+  const sceneSha = await computeGitBlobSha('prose', 'utf-8');
+  const baseIllustrationSha = await computeGitBlobSha(baseImage, 'base64');
+  const remoteIllustrationSha = await computeGitBlobSha(remoteImage, 'base64');
+
+  apiClient.compareCommits.mockResolvedValue({ aheadBy: 1, behindBy: 1, mergeBaseSha: 'base-commit-sha' });
+  apiClient.getRef.mockResolvedValue({ sha: 'remote-commit-sha' });
+  apiClient.getCommit.mockImplementation(async ({ sha }) => {
+    if (sha === 'remote-commit-sha') return { tree: { sha: 'remote-tree-sha' }, parents: ['base-commit-sha'] };
+    if (sha === 'base-commit-sha') return { tree: { sha: 'base-tree-sha' }, parents: [] };
+    throw new Error(`unexpected getCommit sha: ${sha}`);
+  });
+  apiClient.getTree.mockImplementation(async ({ sha }) => {
+    if (sha === 'remote-tree-sha') {
+      return [
+        { path: 'book.json', type: 'blob', sha: bookJsonSha },
+        { path: 'scenes/sc1.md', type: 'blob', sha: sceneSha },
+        { path: 'illustrations/illus1.png', type: 'blob', sha: remoteIllustrationSha }, // changed remotely
+      ];
+    }
+    if (sha === 'base-tree-sha') {
+      return [
+        { path: 'book.json', type: 'blob', sha: bookJsonSha },
+        { path: 'scenes/sc1.md', type: 'blob', sha: sceneSha },
+        { path: 'illustrations/illus1.png', type: 'blob', sha: baseIllustrationSha },
+      ];
+    }
+    throw new Error(`unexpected getTree sha: ${sha}`);
+  });
+  apiClient.getBlob.mockImplementation(async ({ sha }) => {
+    if (sha === remoteIllustrationSha) return { content: remoteImage, encoding: 'base64' };
+    throw new Error(`unexpected getBlob sha: ${sha}`);
+  });
+  apiClient.createBlob.mockResolvedValue({ sha: 'new-blob-sha' });
+  apiClient.createTree.mockResolvedValue({ sha: 'new-tree-sha' });
+  apiClient.createCommit.mockResolvedValue({ sha: 'new-commit-sha' });
+  apiClient.updateRef.mockResolvedValue({ ok: true });
+
+  const result = await pushSync({
+    repo: 'o/r', token: 't', branch: 'main', bookData: book,
+    lastSyncCommitSha: 'sync-sha', cache: fakeCache(), author: { name: 'A', email: 'a@x.com' },
+  });
+
+  // Both sides changed the illustration differently -- remote wins, local's
+  // edit is discarded (there is no way to merge binary content).
+  expect(result.bookData.illustrations[0].imageData).toBe(`data:image/png;base64,${remoteImage}`);
+  expect(result.bookData.illustrations[0].imageData).not.toBe(`data:image/png;base64,${localImage}`);
 });
 
 test('pullSync fetches the current tree and reassembles bookData, using the cache to skip unchanged blobs', async () => {

@@ -110,7 +110,7 @@ export async function compareCommits({ repo, token, base, head }) {
 }
 
 export async function bootstrapEmptyRepo({ repo, token, branch, path, content }) {
-  const base64 = typeof btoa === 'function' ? btoa(content) : Buffer.from(content, 'utf-8').toString('base64');
+  const base64 = btoa(content);
   const { json } = await request(`${BASE}/repos/${repo}/contents/${path}`, {
     token,
     method: 'PUT',
