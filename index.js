@@ -3,3 +3,7 @@ export { computeGitBlobSha } from './src/blobSha.js';
 export { projectBook, reassembleBook } from './src/project.js';
 export { mergeSceneContent } from './src/mergeScene.js';
 export { mergeBookMetadata } from './src/mergeMetadata.js';
+export {
+  getRepo, getRef, updateRef, createRef, createBlob, getBlob,
+  createTree, getTree, createCommit, getCommit, compareCommits, bootstrapEmptyRepo,
+} from './src/apiClient.js';

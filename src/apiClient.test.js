@@ -1,0 +1,143 @@
+import {
+  getRepo, getRef, updateRef, createRef, createBlob, getBlob,
+  createTree, getTree, createCommit, getCommit, compareCommits, bootstrapEmptyRepo,
+} from './apiClient.js';
+// getBlob is exercised directly below (GitHub's blob API always returns
+// content as base64 regardless of how it was created — this is the
+// contract sync.js's atob_utf8 helper relies on, so it's locked in here).
+
+function mockFetchOnce(status, body) {
+  const calls = [];
+  global.fetch = Object.assign(
+    async (...args) => {
+      calls.push(args);
+      return {
+        ok: status >= 200 && status < 300,
+        status,
+        json: async () => body,
+      };
+    },
+    { mock: { calls } }
+  );
+}
+
+afterEach(() => {
+  delete global.fetch;
+});
+
+test('getRepo returns default branch and permissions', async () => {
+  mockFetchOnce(200, { default_branch: 'main', private: true, permissions: { push: true } });
+  const result = await getRepo({ repo: 'owner/repo', token: 't' });
+  expect(result).toEqual({ defaultBranch: 'main', private: true, permissions: { push: true } });
+  const [url, options] = global.fetch.mock.calls[0];
+  expect(url).toBe('https://api.github.com/repos/owner/repo');
+  expect(options.headers.Authorization).toBe('Bearer t');
+});
+
+test('getRef returns the sha on success', async () => {
+  mockFetchOnce(200, { object: { sha: 'abc123' } });
+  const result = await getRef({ repo: 'owner/repo', token: 't', branch: 'main' });
+  expect(result).toEqual({ sha: 'abc123' });
+});
+
+test('getRef returns null on 404 (branch does not exist yet)', async () => {
+  mockFetchOnce(404, { message: 'Not Found' });
+  const result = await getRef({ repo: 'owner/repo', token: 't', branch: 'main' });
+  expect(result).toBeNull();
+});
+
+test('updateRef returns ok:true on 200', async () => {
+  mockFetchOnce(200, { object: { sha: 'new-sha' } });
+  const result = await updateRef({ repo: 'owner/repo', token: 't', branch: 'main', sha: 'new-sha', force: false });
+  expect(result).toEqual({ ok: true });
+});
+
+test('updateRef returns ok:false, status:422 on a non-fast-forward rejection -- does not throw', async () => {
+  mockFetchOnce(422, { message: 'Update is not a fast forward' });
+  const result = await updateRef({ repo: 'owner/repo', token: 't', branch: 'main', sha: 'new-sha', force: false });
+  expect(result).toEqual({ ok: false, status: 422 });
+});
+
+test('createBlob sends the exact encoding and content given, returns sha', async () => {
+  mockFetchOnce(201, { sha: 'blob-sha' });
+  const result = await createBlob({ repo: 'owner/repo', token: 't', content: 'hello', encoding: 'utf-8' });
+  expect(result).toEqual({ sha: 'blob-sha' });
+  const [, options] = global.fetch.mock.calls[0];
+  expect(JSON.parse(options.body)).toEqual({ content: 'hello', encoding: 'utf-8' });
+});
+
+test('createTree sends base_tree and entries, supports sha:null for deletion', async () => {
+  mockFetchOnce(201, { sha: 'tree-sha' });
+  await createTree({
+    repo: 'owner/repo',
+    token: 't',
+    baseTree: 'base-tree-sha',
+    entries: [
+      { path: 'book.json', mode: '100644', type: 'blob', sha: 'blob-sha' },
+      { path: 'old-file.txt', mode: '100644', type: 'blob', sha: null },
+    ],
+  });
+  const [, options] = global.fetch.mock.calls[0];
+  const body = JSON.parse(options.body);
+  expect(body.base_tree).toBe('base-tree-sha');
+  expect(body.tree).toEqual([
+    { path: 'book.json', mode: '100644', type: 'blob', sha: 'blob-sha' },
+    { path: 'old-file.txt', mode: '100644', type: 'blob', sha: null },
+  ]);
+});
+
+test('createCommit sends a single parent and real author identity', async () => {
+  mockFetchOnce(201, { sha: 'commit-sha' });
+  await createCommit({
+    repo: 'owner/repo', token: 't', message: 'msg', tree: 'tree-sha',
+    parents: ['parent-sha'], author: { name: 'Alice', email: 'alice@example.com' },
+  });
+  const [, options] = global.fetch.mock.calls[0];
+  const body = JSON.parse(options.body);
+  expect(body.parents).toEqual(['parent-sha']);
+  expect(body.author).toEqual({ name: 'Alice', email: 'alice@example.com' });
+});
+
+test('compareCommits returns mergeBaseSha, aheadBy, behindBy', async () => {
+  mockFetchOnce(200, { ahead_by: 1, behind_by: 1, merge_base_commit: { sha: 'base-sha' } });
+  const result = await compareCommits({ repo: 'owner/repo', token: 't', base: 'b', head: 'h' });
+  expect(result).toEqual({ aheadBy: 1, behindBy: 1, mergeBaseSha: 'base-sha' });
+});
+
+test('compareCommits returns null when base no longer exists in history', async () => {
+  mockFetchOnce(404, { message: 'Not Found' });
+  const result = await compareCommits({ repo: 'owner/repo', token: 't', base: 'gone', head: 'h' });
+  expect(result).toBeNull();
+});
+
+test('bootstrapEmptyRepo uses the Contents API, not Git Data API', async () => {
+  mockFetchOnce(201, { commit: { sha: 'bootstrap-sha' } });
+  const result = await bootstrapEmptyRepo({
+    repo: 'owner/repo', token: 't', branch: 'main', path: '_bootstrap.txt', content: 'seed',
+  });
+  expect(result).toEqual({ commitSha: 'bootstrap-sha' });
+  const [url, options] = global.fetch.mock.calls[0];
+  expect(url).toBe('https://api.github.com/repos/owner/repo/contents/_bootstrap.txt');
+  expect(options.method).toBe('PUT');
+});
+
+test('getBlob returns content and encoding exactly as GitHub reports them', async () => {
+  mockFetchOnce(200, { content: 'aGVsbG8=', encoding: 'base64' });
+  const result = await getBlob({ repo: 'owner/repo', token: 't', sha: 'blob-sha' });
+  expect(result).toEqual({ content: 'aGVsbG8=', encoding: 'base64' });
+  const [url] = global.fetch.mock.calls[0];
+  expect(url).toBe('https://api.github.com/repos/owner/repo/git/blobs/blob-sha');
+});
+
+test('getTree fetches recursively and returns path/type/sha entries', async () => {
+  mockFetchOnce(200, { tree: [{ path: 'book.json', type: 'blob', sha: 's1' }, { path: 'scenes', type: 'tree', sha: 's2' }] });
+  const result = await getTree({ repo: 'owner/repo', token: 't', sha: 'tree-sha' });
+  expect(result).toEqual([{ path: 'book.json', type: 'blob', sha: 's1' }, { path: 'scenes', type: 'tree', sha: 's2' }]);
+  const [url] = global.fetch.mock.calls[0];
+  expect(url).toContain('recursive=1');
+});
+
+test('a non-2xx, non-404/422 response throws with the status attached', async () => {
+  mockFetchOnce(500, { message: 'Server Error' });
+  await expect(getRepo({ repo: 'owner/repo', token: 't' })).rejects.toMatchObject({ status: 500 });
+});
