@@ -65,7 +65,7 @@ test('book.json omits scene content and github.* local bookkeeping', () => {
 });
 
 test('reassembleBook fills github.* with empty defaults (caller is responsible for local sync bookkeeping)', () => {
-  const book = makeBook();
+  const book = makeBook({ github: { repository: 'owner/repo', lastSyncCommitSha: 'deadbeef' } });
   const files = projectBook(book);
   const restored = reassembleBook(files);
   // github.* was never in the projected files, so on reassembly it comes back
