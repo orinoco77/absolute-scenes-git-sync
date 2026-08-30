@@ -1,9 +1,9 @@
 import { jest } from '@jest/globals';
 
-function makeBook(title = 'Book') {
+function makeBook(title = 'Book', sceneContent = 'prose') {
   return {
     title, author: 'A', frontMatter: [], backMatter: [], parts: [],
-    chapters: [{ id: 'ch1', title: 'C1', scenes: [{ id: 'sc1', title: 'S1', content: 'prose', notes: '', created: '', modified: '', assignedAuthor: '' }] }],
+    chapters: [{ id: 'ch1', title: 'C1', scenes: [{ id: 'sc1', title: 'S1', content: sceneContent, notes: '', created: '', modified: '', assignedAuthor: '' }] }],
     illustrations: [], characters: [], characterDetectionBlacklist: [], locations: [],
     backgroundFolders: [], template: {}, collaboration: {}, metadata: {}, github: {},
   };
@@ -15,6 +15,15 @@ function fakeCache() {
     async get(path) { return store.get(path) ?? null; },
     async set(path, entry) { store.set(path, entry); },
   };
+}
+
+// GitHub's real blob API always reports content as base64, regardless of the
+// original encoding at write time -- these merge-branch tests rely on that
+// contract to distinguish a correct decode from the Finding-1 regression
+// (sniffing blob.encoding, which is always 'base64', instead of the path).
+function utf8ToBase64(str) {
+  const bytes = new TextEncoder().encode(str);
+  return btoa(String.fromCharCode(...bytes));
 }
 
 // Task 7 (migration.test.js) established that plain jest.spyOn(apiClient, 'fn')
@@ -148,4 +157,117 @@ test('gives up after maxRetries consecutive 422s rather than retrying forever', 
   })).rejects.toThrow(/could not sync/i);
 
   expect(apiClient.updateRef).toHaveBeenCalledTimes(3);
+});
+
+test('genuine 3-way merge: scene content changed on both sides since the merge base, merges cleanly', async () => {
+  // Same fixture as mergeScene.test.js's "append at the bottom vs insert in
+  // the middle" case, routed through the full pushSync flow this time.
+  const baseSceneContent = 'Paragraph one.\nParagraph two.\nParagraph three.';
+  const localSceneContent = baseSceneContent + '\nParagraph four, added by A at the bottom.';
+  const remoteSceneContent = 'Paragraph one.\nInserted by B between one and two.\nParagraph two.\nParagraph three.';
+  const expectedMergedContent =
+    'Paragraph one.\nInserted by B between one and two.\nParagraph two.\nParagraph three.\nParagraph four, added by A at the bottom.';
+
+  const book = makeBook('Title', localSceneContent);
+  const bookJsonContent = projectBook(book).get('book.json').content;
+
+  apiClient.compareCommits.mockResolvedValue({ aheadBy: 1, behindBy: 1, mergeBaseSha: 'base-commit-sha' });
+  apiClient.getRef.mockResolvedValue({ sha: 'remote-commit-sha' });
+  apiClient.getCommit.mockImplementation(async ({ sha }) => {
+    if (sha === 'remote-commit-sha') return { tree: { sha: 'remote-tree-sha' }, parents: ['base-commit-sha'] };
+    if (sha === 'base-commit-sha') return { tree: { sha: 'base-tree-sha' }, parents: [] };
+    throw new Error(`unexpected getCommit sha: ${sha}`);
+  });
+  apiClient.getTree.mockImplementation(async ({ sha }) => {
+    if (sha === 'remote-tree-sha') {
+      return [
+        // book.json identical to base -- keeps this test isolated to the scene merge
+        { path: 'book.json', type: 'blob', sha: 'unchanged-book-json-sha' },
+        { path: 'scenes/sc1.md', type: 'blob', sha: 'remote-scene-sha' },
+      ];
+    }
+    if (sha === 'base-tree-sha') {
+      return [
+        { path: 'book.json', type: 'blob', sha: 'unchanged-book-json-sha' },
+        { path: 'scenes/sc1.md', type: 'blob', sha: 'base-scene-sha' },
+      ];
+    }
+    throw new Error(`unexpected getTree sha: ${sha}`);
+  });
+  apiClient.getBlob.mockImplementation(async ({ sha }) => {
+    if (sha === 'base-scene-sha') return { content: utf8ToBase64(baseSceneContent), encoding: 'base64' };
+    if (sha === 'remote-scene-sha') return { content: utf8ToBase64(remoteSceneContent), encoding: 'base64' };
+    throw new Error(`unexpected getBlob sha: ${sha}`);
+  });
+  apiClient.createBlob.mockResolvedValue({ sha: 'new-blob-sha' });
+  apiClient.createTree.mockResolvedValue({ sha: 'new-tree-sha' });
+  apiClient.createCommit.mockResolvedValue({ sha: 'new-commit-sha' });
+  apiClient.updateRef.mockResolvedValue({ ok: true });
+
+  const result = await pushSync({
+    repo: 'o/r', token: 't', branch: 'main', bookData: book,
+    lastSyncCommitSha: 'sync-sha', cache: fakeCache(), author: { name: 'A', email: 'a@x.com' },
+  });
+
+  expect(result.conflicts).toEqual([]);
+  expect(result.bookData.chapters[0].scenes[0].content).toBe(expectedMergedContent);
+
+  const sceneBlobCall = apiClient.createBlob.mock.calls.find(([args]) => args.encoding === 'utf-8' && args.content === expectedMergedContent);
+  expect(sceneBlobCall).toBeDefined();
+
+  // book.json's own content string is unused here beyond confirming the
+  // fixture shape -- the merge target is the scene, not the metadata.
+  expect(bookJsonContent).toContain('"id": "sc1"');
+});
+
+test('genuine 3-way merge: book.json metadata changed on both sides, merges without crashing on JSON.parse', async () => {
+  const baseBook = makeBook('Base Title');
+  const localBook = makeBook('Local Title');
+  const remoteBook = makeBook('Remote Title');
+
+  const baseBookJsonContent = projectBook(baseBook).get('book.json').content;
+  const remoteBookJsonContent = projectBook(remoteBook).get('book.json').content;
+
+  apiClient.compareCommits.mockResolvedValue({ aheadBy: 1, behindBy: 1, mergeBaseSha: 'base-commit-sha' });
+  apiClient.getRef.mockResolvedValue({ sha: 'remote-commit-sha' });
+  apiClient.getCommit.mockImplementation(async ({ sha }) => {
+    if (sha === 'remote-commit-sha') return { tree: { sha: 'remote-tree-sha' }, parents: ['base-commit-sha'] };
+    if (sha === 'base-commit-sha') return { tree: { sha: 'base-tree-sha' }, parents: [] };
+    throw new Error(`unexpected getCommit sha: ${sha}`);
+  });
+  apiClient.getTree.mockImplementation(async ({ sha }) => {
+    if (sha === 'remote-tree-sha') {
+      return [
+        { path: 'book.json', type: 'blob', sha: 'remote-book-json-sha' },
+        // scene unchanged on remote since base -- keeps this test isolated to book.json
+        { path: 'scenes/sc1.md', type: 'blob', sha: 'unchanged-scene-sha' },
+      ];
+    }
+    if (sha === 'base-tree-sha') {
+      return [
+        { path: 'book.json', type: 'blob', sha: 'base-book-json-sha' },
+        { path: 'scenes/sc1.md', type: 'blob', sha: 'unchanged-scene-sha' },
+      ];
+    }
+    throw new Error(`unexpected getTree sha: ${sha}`);
+  });
+  apiClient.getBlob.mockImplementation(async ({ sha }) => {
+    if (sha === 'base-book-json-sha') return { content: utf8ToBase64(baseBookJsonContent), encoding: 'base64' };
+    if (sha === 'remote-book-json-sha') return { content: utf8ToBase64(remoteBookJsonContent), encoding: 'base64' };
+    throw new Error(`unexpected getBlob sha: ${sha}`);
+  });
+  apiClient.createBlob.mockResolvedValue({ sha: 'new-blob-sha' });
+  apiClient.createTree.mockResolvedValue({ sha: 'new-tree-sha' });
+  apiClient.createCommit.mockResolvedValue({ sha: 'new-commit-sha' });
+  apiClient.updateRef.mockResolvedValue({ ok: true });
+
+  const result = await pushSync({
+    repo: 'o/r', token: 't', branch: 'main', bookData: localBook,
+    lastSyncCommitSha: 'sync-sha', cache: fakeCache(), author: { name: 'A', email: 'a@x.com' },
+  });
+
+  // both sides changed the title differently -- mergeBookMetadata's tie-break
+  // in pushSync favors local on a genuine conflict.
+  expect(result.bookData.title).toBe('Local Title');
+  expect(apiClient.updateRef).toHaveBeenCalledWith(expect.objectContaining({ sha: 'new-commit-sha' }));
 });

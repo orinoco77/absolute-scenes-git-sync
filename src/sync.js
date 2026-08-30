@@ -8,9 +8,13 @@ async function fetchRemoteFile({ repo, token, remoteTreeByPath, path }) {
   const entry = remoteTreeByPath.get(path);
   if (!entry) return null;
   const blob = await apiClient.getBlob({ repo, token, sha: entry.sha });
-  return blob.encoding === 'base64'
-    ? { content: blob.content, encoding: 'base64' }
-    : { content: atob_utf8(blob.content), encoding: 'utf-8' };
+  // GitHub's blob API always reports encoding:'base64' regardless of how the
+  // blob was created, so encoding-sniffing is useless here -- decide text vs.
+  // binary from the path itself, same convention pullSync (Task 9) uses.
+  const isText = path === 'book.json' || path.endsWith('.md');
+  return isText
+    ? { content: atob_utf8(blob.content), encoding: 'utf-8' }
+    : { content: blob.content, encoding: 'base64' };
 }
 
 // GitHub's blob API always returns base64-encoded content regardless of the
