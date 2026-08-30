@@ -148,3 +148,30 @@ export async function pushSync({ repo, token, branch, bookData, lastSyncCommitSh
 
   throw new Error(`Could not sync after ${maxRetries} attempts -- repeated concurrent pushes from another device.`);
 }
+
+export async function pullSync({ repo, token, branch, cache }) {
+  const ref = await apiClient.getRef({ repo, token, branch });
+  const commit = await apiClient.getCommit({ repo, token, sha: ref.sha });
+  const tree = await apiClient.getTree({ repo, token, sha: commit.tree.sha });
+
+  const files = new Map();
+  for (const entry of tree) {
+    if (entry.type !== 'blob') continue;
+    const cached = await cache.get(entry.path);
+    if (cached && cached.sha === entry.sha) {
+      files.set(entry.path, { content: cached.content, encoding: cached.encoding });
+      continue;
+    }
+    const blob = await apiClient.getBlob({ repo, token, sha: entry.sha });
+    // Same path-based text/binary convention as fetchRemoteFile above --
+    // GitHub's blob API always reports encoding:'base64' regardless of the
+    // file's real nature, so encoding-sniffing is useless here too.
+    const isText = entry.path === 'book.json' || entry.path.endsWith('.md');
+    const content = isText ? atob_utf8(blob.content) : blob.content;
+    const encoding = isText ? 'utf-8' : 'base64';
+    files.set(entry.path, { content, encoding });
+    await cache.set(entry.path, { sha: entry.sha, content, encoding });
+  }
+
+  return { commitSha: ref.sha, bookData: reassembleBook(files) };
+}

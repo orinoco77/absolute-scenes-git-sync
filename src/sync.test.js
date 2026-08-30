@@ -47,7 +47,7 @@ jest.unstable_mockModule('./apiClient.js', () => ({
   bootstrapEmptyRepo: jest.fn(),
 }));
 
-const { pushSync } = await import('./sync.js');
+const { pushSync, pullSync } = await import('./sync.js');
 const apiClient = await import('./apiClient.js');
 const { projectBook } = await import('./project.js');
 const { computeGitBlobSha } = await import('./blobSha.js');
@@ -270,4 +270,52 @@ test('genuine 3-way merge: book.json metadata changed on both sides, merges with
   // in pushSync favors local on a genuine conflict.
   expect(result.bookData.title).toBe('Local Title');
   expect(apiClient.updateRef).toHaveBeenCalledWith(expect.objectContaining({ sha: 'new-commit-sha' }));
+});
+
+test('pullSync fetches the current tree and reassembles bookData, using the cache to skip unchanged blobs', async () => {
+  apiClient.getRef.mockResolvedValue({ sha: 'remote-sha' });
+  apiClient.getCommit.mockResolvedValue({ tree: { sha: 'remote-tree-sha' }, parents: [] });
+  apiClient.getTree.mockResolvedValue([
+    { path: 'book.json', type: 'blob', sha: 'book-json-sha' },
+    { path: 'scenes/sc1.md', type: 'blob', sha: 'scene-sha' },
+  ]);
+  const bookJson = JSON.stringify({
+    title: 'Pulled Book', author: '', frontMatter: [], backMatter: [], parts: [],
+    chapters: [{ id: 'ch1', title: 'C1', scenes: [{ id: 'sc1', title: 'S1', notes: '', created: '', modified: '', assignedAuthor: '' }] }],
+    illustrations: [], characters: [], characterDetectionBlacklist: [], locations: [], backgroundFolders: [], template: {}, collaboration: {}, metadata: {},
+  });
+  apiClient.getBlob.mockImplementation(async ({ sha }) => {
+    if (sha === 'book-json-sha') return { content: utf8ToBase64(bookJson), encoding: 'base64' };
+    if (sha === 'scene-sha') return { content: utf8ToBase64('pulled scene content'), encoding: 'base64' };
+    throw new Error('unexpected sha');
+  });
+
+  const cache = fakeCache();
+
+  const result = await pullSync({ repo: 'o/r', token: 't', branch: 'main', cache });
+  expect(result.commitSha).toBe('remote-sha');
+  expect(result.bookData.title).toBe('Pulled Book');
+  expect(result.bookData.chapters[0].scenes[0].content).toBe('pulled scene content');
+  expect(apiClient.getBlob).toHaveBeenCalledTimes(2);
+});
+
+test('pullSync skips fetching a blob whose sha is already in the cache', async () => {
+  apiClient.getRef.mockResolvedValue({ sha: 'remote-sha' });
+  apiClient.getCommit.mockResolvedValue({ tree: { sha: 'remote-tree-sha' }, parents: [] });
+  apiClient.getTree.mockResolvedValue([
+    { path: 'book.json', type: 'blob', sha: 'book-json-sha' },
+  ]);
+  const bookJson = JSON.stringify({
+    title: 'Cached Book', author: '', frontMatter: [], backMatter: [], parts: [], chapters: [],
+    illustrations: [], characters: [], characterDetectionBlacklist: [], locations: [], backgroundFolders: [], template: {}, collaboration: {}, metadata: {},
+  });
+
+  const cache = (() => {
+    const store = new Map([['book.json', { sha: 'book-json-sha', content: bookJson, encoding: 'utf-8' }]]);
+    return { async get(p) { return store.get(p) ?? null; }, async set(p, e) { store.set(p, e); } };
+  })();
+
+  const result = await pullSync({ repo: 'o/r', token: 't', branch: 'main', cache });
+  expect(apiClient.getBlob).not.toHaveBeenCalled();
+  expect(result.bookData.title).toBe('Cached Book');
 });

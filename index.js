@@ -8,4 +8,4 @@ export {
   createTree, getTree, createCommit, getCommit, compareCommits, bootstrapEmptyRepo,
 } from './src/apiClient.js';
 export { detectRepoLayout, migrateLegacyRepo } from './src/migration.js';
-export { pushSync } from './src/sync.js';
+export { pushSync, pullSync } from './src/sync.js';
