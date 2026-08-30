@@ -7,3 +7,4 @@ export {
   getRepo, getRef, updateRef, createRef, createBlob, getBlob,
   createTree, getTree, createCommit, getCommit, compareCommits, bootstrapEmptyRepo,
 } from './src/apiClient.js';
+export { detectRepoLayout, migrateLegacyRepo } from './src/migration.js';
