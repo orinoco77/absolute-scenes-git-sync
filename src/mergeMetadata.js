@@ -102,5 +102,6 @@ export function mergeBookMetadata(base, local, remote, tieBreak) {
     frontMatter: mergeArrayWithIds(base.frontMatter, local.frontMatter, remote.frontMatter, tieBreak, mergeSimpleItem),
     backMatter: mergeArrayWithIds(base.backMatter, local.backMatter, remote.backMatter, tieBreak, mergeSimpleItem),
     backgroundFolders: mergeArrayWithIds(base.backgroundFolders, local.backgroundFolders, remote.backgroundFolders, tieBreak, mergeSimpleItem),
+    illustrations: mergeArrayWithIds(base.illustrations, local.illustrations, remote.illustrations, tieBreak, mergeSimpleItem),
   };
 }

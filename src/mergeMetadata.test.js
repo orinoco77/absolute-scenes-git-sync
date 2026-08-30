@@ -14,6 +14,7 @@ function baseBook() {
     characterDetectionBlacklist: ['the', 'and'],
     locations: [],
     backgroundFolders: [],
+    illustrations: [],
     template: { fontFamily: 'Georgia' },
     collaboration: { enabled: true, authors: ['Alice'], currentAuthor: 'Alice' },
     metadata: { created: '2026-01-01T00:00:00Z' },
@@ -107,4 +108,13 @@ test('template and collaboration objects use whole-object tieBreak when both sid
   const local = { ...base, template: { fontFamily: 'Local Font' } };
   const remote = { ...base, template: { fontFamily: 'Remote Font' } };
   expect(mergeBookMetadata(base, local, remote, 'remote').template.fontFamily).toBe('Remote Font');
+});
+
+test('illustrations merge the same way as other id-keyed arrays (union of additions)', () => {
+  const base = baseBook();
+  const newIllustration = { id: 'illus1', pageNumber: 3 };
+  const local = { ...base, illustrations: [...base.illustrations, newIllustration] };
+  const result = mergeBookMetadata(base, local, base, 'local');
+  expect(result.illustrations).toHaveLength(1);
+  expect(result.illustrations[0]).toEqual(newIllustration);
 });
