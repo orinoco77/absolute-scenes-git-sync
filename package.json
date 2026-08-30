@@ -1,0 +1,17 @@
+{
+  "name": "@absolute-scenes/git-sync",
+  "version": "0.1.0",
+  "description": "Git-native GitHub sync engine shared by absolute-scenes and absolute-scenes-mobile",
+  "type": "module",
+  "main": "index.js",
+  "scripts": {
+    "test": "node --experimental-vm-modules node_modules/.bin/jest --passWithNoTests",
+    "test:live": "node --experimental-vm-modules node_modules/.bin/jest live.integration.test.js"
+  },
+  "dependencies": {
+    "node-diff3": "^3.1.2"
+  },
+  "devDependencies": {
+    "jest": "^30.2.0"
+  }
+}
