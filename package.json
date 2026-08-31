@@ -1,6 +1,6 @@
 {
   "name": "@absolute-scenes/git-sync",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "Git-native GitHub sync engine shared by absolute-scenes and absolute-scenes-mobile",
   "type": "module",
   "main": "index.js",
