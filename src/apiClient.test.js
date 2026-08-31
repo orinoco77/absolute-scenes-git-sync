@@ -46,6 +46,18 @@ test('getRef returns null on 404 (branch does not exist yet)', async () => {
   expect(result).toBeNull();
 });
 
+test('getRef returns null on 409 "Git Repository is empty" (a truly empty repo, zero commits) -- real GitHub response, not a guess', async () => {
+  // This exact response body was observed live against a real empty scratch
+  // repo during design verification (spec section 9): GitHub returns 409,
+  // not 404, when looking up any ref on a repository with zero commits.
+  mockFetchOnce(409, {
+    message: 'Git Repository is empty.',
+    documentation_url: 'https://docs.github.com/rest/git/refs#get-a-reference',
+  });
+  const result = await getRef({ repo: 'owner/repo', token: 't', branch: 'main' });
+  expect(result).toBeNull();
+});
+
 test('updateRef returns ok:true on 200', async () => {
   mockFetchOnce(200, { object: { sha: 'new-sha' } });
   const result = await updateRef({ repo: 'owner/repo', token: 't', branch: 'main', sha: 'new-sha', force: false });
