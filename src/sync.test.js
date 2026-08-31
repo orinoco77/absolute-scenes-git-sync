@@ -293,6 +293,87 @@ test('genuine 3-way merge: book.json metadata changed on both sides, merges with
   expect(apiClient.updateRef).toHaveBeenCalledWith(expect.objectContaining({ sha: 'new-commit-sha' }));
 });
 
+test('remote-only-new-file regression: a scene added by another device (never seen locally) is adopted with its real content, not reset to empty', async () => {
+  // buildAttempt's main loop only walks localFiles -- paths the local book
+  // already knows about. A file that exists on remote but was never in
+  // local's own projection at all (a scene another device added, that this
+  // device has never seen) has no entry driving that loop, so it was never
+  // fetched into mergedFiles. The old "deleted locally" loop only reinstates
+  // paths that also existed at the merge base -- a genuinely new-since-base
+  // remote file fell through both loops entirely. reassembleBook then still
+  // lists the scene (its metadata rides along inside book.json, which *is*
+  // adopted from remote) but with content defaulting to '' since the file
+  // itself was never in the merged map -- real, live-reproduced data loss,
+  // not a hypothetical.
+  const localSceneContent = 'scene1 content, untouched';
+  const remoteOnlySceneContent = 'sceneB content from another device';
+
+  const localBook = makeBook('Shared Title', localSceneContent); // only has sc1 -- has never heard of sceneB
+
+  const bookJsonBaseContent = projectBook(localBook).get('book.json').content;
+  const bookJsonBaseSha = await computeGitBlobSha(bookJsonBaseContent, 'utf-8');
+  const sc1Sha = await computeGitBlobSha(localSceneContent, 'utf-8');
+  const sceneBSha = await computeGitBlobSha(remoteOnlySceneContent, 'utf-8');
+
+  // Remote's book.json now lists both scenes (someone else pushed sceneB) --
+  // its content differs from base/local's book.json only by that addition.
+  const remoteBookJson = JSON.parse(bookJsonBaseContent);
+  remoteBookJson.chapters[0].scenes.push({ id: 'sceneB', title: 'Scene B', notes: '', created: '', modified: '', assignedAuthor: '' });
+  const remoteBookJsonContent = JSON.stringify(remoteBookJson, null, 2);
+  const remoteBookJsonSha = await computeGitBlobSha(remoteBookJsonContent, 'utf-8');
+
+  apiClient.compareCommits.mockResolvedValue({ aheadBy: 1, behindBy: 0, mergeBaseSha: 'base-commit-sha' });
+  apiClient.getRef.mockResolvedValue({ sha: 'remote-commit-sha' });
+  apiClient.getCommit.mockImplementation(async ({ sha }) => {
+    if (sha === 'remote-commit-sha') return { tree: { sha: 'remote-tree-sha' }, parents: ['base-commit-sha'] };
+    if (sha === 'base-commit-sha') return { tree: { sha: 'base-tree-sha' }, parents: [] };
+    throw new Error(`unexpected getCommit sha: ${sha}`);
+  });
+  apiClient.getTree.mockImplementation(async ({ sha }) => {
+    if (sha === 'remote-tree-sha') {
+      return [
+        { path: 'book.json', type: 'blob', sha: remoteBookJsonSha },
+        { path: 'scenes/sc1.md', type: 'blob', sha: sc1Sha },
+        { path: 'scenes/sceneB.md', type: 'blob', sha: sceneBSha }, // new since base
+      ];
+    }
+    if (sha === 'base-tree-sha') {
+      return [
+        { path: 'book.json', type: 'blob', sha: bookJsonBaseSha },
+        { path: 'scenes/sc1.md', type: 'blob', sha: sc1Sha },
+      ];
+    }
+    throw new Error(`unexpected getTree sha: ${sha}`);
+  });
+  apiClient.getBlob.mockImplementation(async ({ sha }) => {
+    if (sha === remoteBookJsonSha) return { content: utf8ToBase64(remoteBookJsonContent), encoding: 'base64' };
+    if (sha === sceneBSha) return { content: utf8ToBase64(remoteOnlySceneContent), encoding: 'base64' };
+    throw new Error(`unexpected getBlob sha: ${sha}`);
+  });
+  apiClient.createBlob.mockResolvedValue({ sha: 'new-blob-sha' });
+  apiClient.createTree.mockResolvedValue({ sha: 'new-tree-sha' });
+  apiClient.createCommit.mockResolvedValue({ sha: 'new-commit-sha' });
+  apiClient.updateRef.mockResolvedValue({ ok: true });
+
+  const result = await pushSync({
+    repo: 'o/r', token: 't', branch: 'main', bookData: localBook,
+    lastSyncCommitSha: 'sync-sha', cache: fakeCache(), author: { name: 'A', email: 'a@x.com' },
+  });
+
+  const sceneB = result.bookData.chapters[0].scenes.find(s => s.id === 'sceneB');
+  expect(sceneB).toBeDefined();
+  expect(sceneB.content).toBe(remoteOnlySceneContent);
+  expect(result.bookData.chapters[0].scenes.find(s => s.id === 'sc1').content).toBe(localSceneContent);
+
+  // Nothing to push back -- this device didn't change anything; it just
+  // needed to learn about sceneB. A no-op push must not fabricate a delete
+  // or a duplicate blob for a file that's already correct on remote.
+  const treeCall = apiClient.createTree.mock.calls[0]?.[0];
+  if (treeCall) {
+    expect(treeCall.entries.some(e => e.path === 'scenes/sceneB.md' && e.sha === null)).toBe(false);
+  }
+});
+
 test('quadrant 3 regression: local left a scene untouched, remote changed it -- remote content is adopted, not reverted', async () => {
   // This is the regression test for the Critical bug caught in final
   // review: buildAttempt's original branching set `mergedFiles.set(path,

@@ -92,10 +92,26 @@ async function buildAttempt({ repo, token, bookData, baseTreeSha, remoteTreeSha,
     }
   }
 
-  // paths that exist on remote but not in local's projection at all -> deleted locally
+  // Paths on remote that local's own projection has no entry for at all --
+  // never touched by the loop above, since it only walks localFiles. Two
+  // different histories produce this, and they need opposite treatment:
+  //   - existed at the merge base, missing locally now -> deleted locally,
+  //     schedule the delete.
+  //   - did NOT exist at the merge base -> new since base (e.g. a scene
+  //     another device added that this book has never even heard of), not
+  //     a local deletion. It must be adopted into mergedFiles so
+  //     reassembleBook can pick up its real content -- without this,
+  //     reassembleBook still lists the scene (its metadata rides along
+  //     inside book.json, itself adopted from remote above) but with
+  //     content silently defaulting to '' since the file was never in the
+  //     merged map. Live-reproduced data loss, not a hypothetical.
   for (const path of remoteTreeByPath.keys()) {
-    if (!localFiles.has(path) && baseTreeByPath.has(path)) {
+    if (localFiles.has(path)) continue;
+    if (baseTreeByPath.has(path)) {
       entries.push({ path, mode: '100644', type: 'blob', sha: null });
+    } else {
+      const remoteFile = await fetchRemoteFile({ repo, token, remoteTreeByPath, path });
+      if (remoteFile) mergedFiles.set(path, remoteFile);
     }
   }
 
