@@ -9,3 +9,5 @@ export {
 } from './src/apiClient.js';
 export { detectRepoLayout, migrateLegacyRepo } from './src/migration.js';
 export { pushSync, pullSync } from './src/sync.js';
+export { syncRepo } from './src/syncRepo.js';
+export { reconcilePostSyncState } from './src/reconcile.js';
