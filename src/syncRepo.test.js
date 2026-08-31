@@ -48,6 +48,20 @@ test('an already-new-layout repo skips migration and calls pushSync directly', a
   expect(result.conflicts).toEqual([]);
 });
 
+test('an unrecognized layout (repo has commits but no book content) skips both migration and pull, and pushes directly', async () => {
+  migration.detectRepoLayout.mockResolvedValue('unrecognized');
+  sync.pushSync.mockResolvedValue({ commitSha: 'new-sha', bookData: { title: 'T' }, conflicts: [] });
+
+  const result = await syncRepo(baseArgs({ lastSyncCommitSha: undefined }));
+
+  expect(migration.migrateLegacyRepo).not.toHaveBeenCalled();
+  expect(sync.pullSync).not.toHaveBeenCalled();
+  expect(sync.pushSync).toHaveBeenCalledWith(
+    expect.objectContaining({ repo: 'owner/repo', lastSyncCommitSha: undefined })
+  );
+  expect(result.conflicts).toEqual([]);
+});
+
 test('a legacy-layout repo is migrated before the first pushSync call', async () => {
   migration.detectRepoLayout.mockResolvedValue('legacy');
   apiClient.getRef.mockResolvedValue({ sha: 'ref-sha' });

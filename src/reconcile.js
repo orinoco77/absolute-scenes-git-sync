@@ -52,20 +52,29 @@ export function reconcilePostSyncState(base, local, remote) {
       continue;
     }
     if (!localChanged && remoteChanged) {
+      // Local never touched this path -- adopt the sync's own result.
       if (r) merged.set(path, r);
       continue;
     }
     if (localChanged && !remoteChanged) {
+      // The sync's result didn't touch this path -- keep the in-flight
+      // local edit, including a local deletion (l undefined).
       if (l) merged.set(path, l);
       continue;
     }
 
-    if (!l && !r) continue;
+    // Both sides changed this path since the pre-sync snapshot -- a
+    // genuine same-device race on the same file.
+    if (!l && !r) continue; // deleted on both sides
     if (!l) {
+      // Deleted locally during the flight, but the sync's result still
+      // changed it -- keep the sync's edit rather than lose it to a race.
       merged.set(path, r);
       continue;
     }
     if (!r) {
+      // The sync's result deleted this path, but the in-flight local edit
+      // is more recent -- never silently drop a live edit just made.
       merged.set(path, l);
       continue;
     }
@@ -94,6 +103,9 @@ export function reconcilePostSyncState(base, local, remote) {
         });
       }
     } else {
+      // Illustrations and anything else binary: no merge strategy exists,
+      // so prefer the in-flight local edit -- it's the user's own, more
+      // recent action on this device, not a stranger's concurrent edit.
       merged.set(path, l);
     }
   }

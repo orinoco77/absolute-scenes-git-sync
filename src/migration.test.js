@@ -44,18 +44,28 @@ test('detects "legacy" when a single .book file exists at the root and no book.j
   expect(layout).toBe('legacy');
 });
 
-test('detects "new" (not "legacy") when the repo has commits but no book.json and no root .book file -- e.g. bootstrap-only', async () => {
+test('detects "unrecognized" (not "legacy" or "new") when the repo has commits but no book.json and no root .book file -- e.g. bootstrap-only', async () => {
   // Real scenario that broke a live user: bootstrapEmptyRepo creates one
   // commit containing only _bootstrap.txt, then the first real push is
   // interrupted before book.json ever lands. A later sync attempt must not
   // misclassify this as "legacy" (there is no .book file to migrate --
   // migrateLegacyRepo would crash trying to find one) or as "empty" (the
-  // ref does exist). It should be treated the same as a fresh push target.
+  // ref does exist). It should be treated the same as a fresh push target,
+  // which is what "unrecognized" falls through to in syncRepo -- distinct
+  // from "new", which now means specifically "confirmed book.json present".
   apiClient.getRef.mockResolvedValue({ sha: 'bootstrap-commit-sha' });
   apiClient.getCommit.mockResolvedValue({ tree: { sha: 'tree-sha' }, parents: [] });
   apiClient.getTree.mockResolvedValue([{ path: '_bootstrap.txt', type: 'blob', sha: 's1' }]);
   const layout = await detectRepoLayout({ repo: 'o/r', token: 't', branch: 'main' });
-  expect(layout).toBe('new');
+  expect(layout).toBe('unrecognized');
+});
+
+test('detects "unrecognized" when the repo has commits but neither book.json nor a .book file', async () => {
+  apiClient.getRef.mockResolvedValue({ sha: 'commit-sha' });
+  apiClient.getCommit.mockResolvedValue({ tree: { sha: 'tree-sha' }, parents: [] });
+  apiClient.getTree.mockResolvedValue([{ path: 'README.md', type: 'blob', sha: 's1' }]);
+  const layout = await detectRepoLayout({ repo: 'o/r', token: 't', branch: 'main' });
+  expect(layout).toBe('unrecognized');
 });
 
 test('migrateLegacyRepo decomposes the old blob and commits the new layout on top of history', async () => {

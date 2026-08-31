@@ -14,14 +14,19 @@ export async function detectRepoLayout({ repo, token, branch }) {
   const tree = await getTree({ repo, token, sha: commit.tree.sha });
   const rootEntries = tree.filter(e => !e.path.includes('/'));
   if (rootEntries.some(e => e.path === 'book.json')) return 'new';
-  // Only classify as "legacy" when there's an actual single-file .book
-  // blob to migrate. A repo with commits but neither book.json nor a
-  // legacy .book file (e.g. one that only ever got as far as
-  // bootstrapEmptyRepo's placeholder commit before being interrupted) has
-  // nothing to migrate -- treat it the same as a fresh push target rather
-  // than crashing migrateLegacyRepo's search for a file that isn't there.
+  // A repo with commits but neither book.json nor a legacy .book file (e.g.
+  // one that only ever got as far as bootstrapEmptyRepo's placeholder commit
+  // before being interrupted, or a repo a user created on github.com with
+  // "Initialize with a README" and hasn't connected a book to yet) has
+  // nothing book-shaped to migrate OR to pull -- syncRepo treats this the
+  // same as a fresh push target (see syncRepo.js), rather than the 'new'
+  // layout's stronger meaning of "confirmed book.json present, safe to pull
+  // wholesale on first sync." Distinct from 'new' specifically so
+  // syncRepo's first-sync-pull decision (and any future caller filtering
+  // repos by "does this already have a real book") doesn't mistake an
+  // empty README for real content.
   if (rootEntries.some(e => e.path.endsWith('.book'))) return 'legacy';
-  return 'new';
+  return 'unrecognized';
 }
 
 export async function migrateLegacyRepo({ repo, token, branch, legacyFilePath, author }) {
