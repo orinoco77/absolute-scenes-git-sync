@@ -14,7 +14,14 @@ export async function detectRepoLayout({ repo, token, branch }) {
   const tree = await getTree({ repo, token, sha: commit.tree.sha });
   const rootEntries = tree.filter(e => !e.path.includes('/'));
   if (rootEntries.some(e => e.path === 'book.json')) return 'new';
-  return 'legacy';
+  // Only classify as "legacy" when there's an actual single-file .book
+  // blob to migrate. A repo with commits but neither book.json nor a
+  // legacy .book file (e.g. one that only ever got as far as
+  // bootstrapEmptyRepo's placeholder commit before being interrupted) has
+  // nothing to migrate -- treat it the same as a fresh push target rather
+  // than crashing migrateLegacyRepo's search for a file that isn't there.
+  if (rootEntries.some(e => e.path.endsWith('.book'))) return 'legacy';
+  return 'new';
 }
 
 export async function migrateLegacyRepo({ repo, token, branch, legacyFilePath, author }) {
