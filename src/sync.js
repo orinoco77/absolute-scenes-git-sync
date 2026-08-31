@@ -27,10 +27,17 @@ function atob_utf8(base64) {
 
 async function buildAttempt({ repo, token, bookData, baseTreeSha, remoteTreeSha, cache }) {
   const localFiles = projectBook(bookData);
-  const remoteTree = await apiClient.getTree({ repo, token, sha: remoteTreeSha });
+  // Defensive filter to blob entries, mirroring pullSync's own guard below --
+  // GitHub's real recursive tree listing includes directory entries (type:
+  // 'tree') that getTree is expected to strip, but buildAttempt must not
+  // trust that unconditionally: an unfiltered directory path (e.g. 'scenes')
+  // reads as "a file the local projection no longer has" and gets scheduled
+  // for deletion, wiping everything under it. Verified live -- a real,
+  // confirmed data-loss bug, not a hypothetical.
+  const remoteTree = (await apiClient.getTree({ repo, token, sha: remoteTreeSha })).filter(e => e.type === 'blob');
   const remoteTreeByPath = new Map(remoteTree.map(e => [e.path, e]));
 
-  const baseTree = baseTreeSha ? await apiClient.getTree({ repo, token, sha: baseTreeSha }) : [];
+  const baseTree = baseTreeSha ? (await apiClient.getTree({ repo, token, sha: baseTreeSha })).filter(e => e.type === 'blob') : [];
   const baseTreeByPath = new Map(baseTree.map(e => [e.path, e]));
 
   const entries = [];

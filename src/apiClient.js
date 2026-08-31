@@ -91,7 +91,15 @@ export async function createTree({ repo, token, baseTree, entries }) {
 
 export async function getTree({ repo, token, sha }) {
   const { json } = await request(`${BASE}/repos/${repo}/git/trees/${sha}?recursive=1`, { token });
-  return json.tree.map(entry => ({ path: entry.path, type: entry.type, sha: entry.sha }));
+  // GitHub's recursive tree listing includes an entry for every intermediate
+  // directory (type: 'tree'), not just the files under it -- verified live.
+  // Every caller of getTree only ever deals in real files (projectBook's
+  // output never contains a bare directory path like 'scenes'), so an
+  // unfiltered directory entry reads as "a file that no longer exists
+  // locally" and gets scheduled for deletion, wiping the whole subtree.
+  return json.tree
+    .filter(entry => entry.type === 'blob')
+    .map(entry => ({ path: entry.path, type: entry.type, sha: entry.sha }));
 }
 
 export async function createCommit({ repo, token, message, tree, parents, author }) {
