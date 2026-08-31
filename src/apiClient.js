@@ -30,9 +30,13 @@ export async function getRepo({ repo, token }) {
 export async function getRef({ repo, token, branch }) {
   const { status, json } = await request(`${BASE}/repos/${repo}/git/ref/heads/${branch}`, {
     token,
-    okStatuses: [404],
+    okStatuses: [404, 409],
   });
-  if (status === 404) return null;
+  // 404: this specific branch doesn't exist (but the repo may have other
+  // history). 409 "Git Repository is empty": the whole repo has zero
+  // commits -- verified live against the real API, not a guess (spec
+  // section 9). Both mean the same thing to every caller: no ref here yet.
+  if (status === 404 || status === 409) return null;
   return { sha: json.object.sha };
 }
 
