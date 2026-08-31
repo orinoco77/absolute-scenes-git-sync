@@ -422,6 +422,57 @@ test('quadrant 3 regression: local left an illustration untouched, remote change
   expect(result.commitSha).toBe('remote-commit-sha');
 });
 
+test('directory-entry regression: GitHub\'s recursive tree listing includes a "scenes" directory entry alongside the blobs -- adding a new scene must not delete an untouched sibling scene file', async () => {
+  // GitHub's real `git/trees/:sha?recursive=1` response includes an entry
+  // for the intermediate directory itself (type: 'tree'), not just the
+  // blobs under it -- verified live, not a guess. projectBook never
+  // produces a literal 'scenes' key (only 'scenes/<id>.md'), so treating
+  // every remote-tree path as a real file whose absence from localFiles
+  // means "deleted locally" makes buildAttempt schedule a delete for the
+  // literal path 'scenes' every single push. GitHub's createTree API
+  // applies that as "remove whatever's at this path" -- wiping the entire
+  // scenes/ subtree -- and only the scene that actually changed this push
+  // gets re-added afterward, silently deleting every other scene file.
+  const unchangedSceneContent = 'This scene was never touched.';
+  const book = makeBook('Same Title', unchangedSceneContent);
+  book.chapters[0].scenes.push({
+    id: 'sc2', title: 'New Scene', content: 'Brand new scene.', notes: '', created: '', modified: '', assignedAuthor: '',
+  });
+
+  const bookJsonBaseContent = projectBook(makeBook('Same Title', unchangedSceneContent)).get('book.json').content;
+  const bookJsonBaseSha = await computeGitBlobSha(bookJsonBaseContent, 'utf-8');
+  const sc1Sha = await computeGitBlobSha(unchangedSceneContent, 'utf-8');
+
+  apiClient.compareCommits.mockResolvedValue({ aheadBy: 0, behindBy: 0, mergeBaseSha: 'sync-sha' });
+  apiClient.getRef.mockResolvedValue({ sha: 'sync-sha' });
+  apiClient.getCommit.mockResolvedValue({ tree: { sha: 'shared-tree-sha' }, parents: [] });
+  apiClient.getTree.mockResolvedValue([
+    { path: 'book.json', type: 'blob', sha: bookJsonBaseSha },
+    { path: 'scenes', type: 'tree', sha: 'directory-entry-sha' }, // the trap
+    { path: 'scenes/sc1.md', type: 'blob', sha: sc1Sha }, // untouched by this push
+  ]);
+  apiClient.createBlob.mockResolvedValue({ sha: 'new-blob-sha' });
+  apiClient.createTree.mockResolvedValue({ sha: 'new-tree-sha' });
+  apiClient.createCommit.mockResolvedValue({ sha: 'new-commit-sha' });
+  apiClient.updateRef.mockResolvedValue({ ok: true });
+
+  const result = await pushSync({
+    repo: 'o/r', token: 't', branch: 'main', bookData: book,
+    lastSyncCommitSha: 'sync-sha', cache: fakeCache(), author: { name: 'A', email: 'a@x.com' },
+  });
+
+  // The critical assertion: the untouched scene is not scheduled for
+  // deletion just because "scenes" (the directory marker, not a real file)
+  // isn't one of projectBook's output paths.
+  const treeCall = apiClient.createTree.mock.calls[0][0];
+  expect(treeCall.entries.some(e => e.path === 'scenes' && e.sha === null)).toBe(false);
+
+  // And the merged bookData handed back to the caller still has both scenes.
+  const sceneIds = result.bookData.chapters[0].scenes.map(s => s.id);
+  expect(sceneIds).toEqual(expect.arrayContaining(['sc1', 'sc2']));
+  expect(result.bookData.chapters[0].scenes.find(s => s.id === 'sc1').content).toBe(unchangedSceneContent);
+});
+
 test('quadrant 4: an illustration changed on both sides -- remote wins (binary conflicts have no merge strategy)', async () => {
   const baseImage = utf8ToBase64('base-image-bytes');
   const localImage = utf8ToBase64('local-image-bytes');

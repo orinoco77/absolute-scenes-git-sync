@@ -156,10 +156,16 @@ test('getBlob returns content and encoding exactly as GitHub reports them', asyn
   expect(url).toBe('https://api.github.com/repos/owner/repo/git/blobs/blob-sha');
 });
 
-test('getTree fetches recursively and returns path/type/sha entries', async () => {
-  mockFetchOnce(200, { tree: [{ path: 'book.json', type: 'blob', sha: 's1' }, { path: 'scenes', type: 'tree', sha: 's2' }] });
+test('getTree fetches recursively and returns path/type/sha entries, filtering out directory entries', async () => {
+  // GitHub's real recursive tree listing includes an entry for every
+  // intermediate directory (type: 'tree'), not just the blobs under it.
+  // Callers only ever deal in real files, so a directory entry like
+  // 'scenes' must never reach them -- see sync.js's buildAttempt, where an
+  // unfiltered 'scenes' entry was misread as "deleted locally" and wiped
+  // the whole subtree on every push.
+  mockFetchOnce(200, { tree: [{ path: 'book.json', type: 'blob', sha: 's1' }, { path: 'scenes', type: 'tree', sha: 's2' }, { path: 'scenes/sc1.md', type: 'blob', sha: 's3' }] });
   const result = await getTree({ repo: 'owner/repo', token: 't', sha: 'tree-sha' });
-  expect(result).toEqual([{ path: 'book.json', type: 'blob', sha: 's1' }, { path: 'scenes', type: 'tree', sha: 's2' }]);
+  expect(result).toEqual([{ path: 'book.json', type: 'blob', sha: 's1' }, { path: 'scenes/sc1.md', type: 'blob', sha: 's3' }]);
   const [url] = global.fetch.mock.calls[0];
   expect(url).toContain('recursive=1');
 });

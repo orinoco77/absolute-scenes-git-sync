@@ -60,6 +60,11 @@ describeLive('live GitHub integration', () => {
     const sceneIds = final.bookData.chapters[0].scenes.map(s => s.id);
     expect(sceneIds).toContain('sc-a');
     expect(sceneIds).toContain('sc-b');
+    // sc1 (from the previous test, pushed to this same branch) was left
+    // untouched by both devices -- it must survive alongside their new
+    // scenes, not be wiped by the directory-entry deletion bug.
+    expect(sceneIds).toContain('sc1');
+    expect(final.bookData.chapters[0].scenes.find(s => s.id === 'sc1').content).toBe('live test prose');
   });
 
   test('compareCommits returns the true merge-base on genuinely diverged history', async () => {
