@@ -13,6 +13,14 @@ async function request(url, { token, method = 'GET', body, okStatuses = [] } = {
     method,
     headers: headers(token),
     body: body ? JSON.stringify(body) : undefined,
+    // GitHub's API responses must never be served from the browser's HTTP
+    // cache: pushSync's retry loop reads getRef/getCommit repeatedly in a
+    // tight loop, and a stale cached response there means a retry rebuilds
+    // from the wrong parent and gets legitimately rejected forever, even
+    // after an earlier attempt's push already landed for real. Verified
+    // live -- this is exactly what caused a real "Could not sync after 5
+    // attempts" failure.
+    cache: 'no-store',
   });
   if (!res.ok && !okStatuses.includes(res.status)) {
     const err = new Error(`GitHub API request failed: ${method} ${url} -> ${res.status}`);

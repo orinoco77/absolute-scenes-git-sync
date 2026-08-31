@@ -25,6 +25,21 @@ afterEach(() => {
   delete global.fetch;
 });
 
+test('every request disables browser HTTP caching (cache: "no-store") -- GitHub API GET responses must never be served stale', async () => {
+  // Real bug found live: the pushSync retry loop's repeated getRef/getCommit
+  // calls could be served a stale cached response by the browser's default
+  // fetch caching, so a retry after a 422 kept rebuilding from the SAME
+  // stale parent instead of the true current tip -- exhausting all 5
+  // retries with false-negative 422s even after an earlier attempt's push
+  // had already landed for real. This exact class of bug was independently
+  // found and partially fixed in the sibling mobile codebase before this
+  // package existed (see SYNC_DIAGNOSIS.md's uncommitted-diff notes).
+  mockFetchOnce(200, { object: { sha: 'abc123' } });
+  await getRef({ repo: 'owner/repo', token: 't', branch: 'main' });
+  const [, options] = global.fetch.mock.calls[0];
+  expect(options.cache).toBe('no-store');
+});
+
 test('getRepo returns default branch and permissions', async () => {
   mockFetchOnce(200, { default_branch: 'main', private: true, permissions: { push: true } });
   const result = await getRepo({ repo: 'owner/repo', token: 't' });
