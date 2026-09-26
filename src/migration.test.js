@@ -96,3 +96,36 @@ test('migrateLegacyRepo decomposes the old blob and commits the new layout on to
   const commitCall = apiClient.createCommit.mock.calls[0][0];
   expect(commitCall.parents).toEqual(['old-commit-sha']);
 });
+
+test('migrateLegacyRepo preserves a pre-chapters legacy book (top-level `scenes`, no `chapters`)', async () => {
+  // Real books saved before the app's chapters migration store content
+  // under a top-level `scenes` array. migrateLegacyRepo used to hand this
+  // straight to projectBook, which only read `chapters` -- silently
+  // committing an empty book.json with zero scene files over the real
+  // content on GitHub the first time any device synced against it.
+  const oldBookData = {
+    title: 'Old Book',
+    scenes: [{ id: 'sc1', title: 'S1', content: 'Real prose that must survive.', notes: '', created: '', modified: '', assignedAuthor: '' }],
+  };
+
+  apiClient.getRef.mockResolvedValue({ sha: 'old-commit-sha' });
+  apiClient.getCommit.mockResolvedValue({ tree: { sha: 'old-tree-sha' }, parents: [] });
+  apiClient.getTree.mockResolvedValue([{ path: 'My Book.book', type: 'blob', sha: 'blob-sha' }]);
+  apiClient.getBlob.mockResolvedValue({ content: utf8ToBase64(JSON.stringify(oldBookData)), encoding: 'base64' });
+  apiClient.createBlob.mockResolvedValue({ sha: 'new-blob-sha' });
+  apiClient.createTree.mockResolvedValue({ sha: 'new-tree-sha' });
+  apiClient.createCommit.mockResolvedValue({ sha: 'migration-commit-sha' });
+  apiClient.updateRef.mockResolvedValue({ ok: true });
+
+  await migrateLegacyRepo({
+    repo: 'o/r', token: 't', branch: 'main', legacyFilePath: 'My Book.book',
+    author: { name: 'Alice', email: 'alice@example.com' },
+  });
+
+  const treeCall = apiClient.createTree.mock.calls[0][0];
+  expect(treeCall.entries.some(e => e.path === 'scenes/sc1.md')).toBe(true);
+  const bookJsonBlobCall = apiClient.createBlob.mock.calls.find(([{ content }]) => content.includes('"chapters"'));
+  const bookJson = JSON.parse(bookJsonBlobCall[0].content);
+  expect(bookJson.chapters).toHaveLength(1);
+  expect(bookJson.chapters[0].scenes).toHaveLength(1);
+});

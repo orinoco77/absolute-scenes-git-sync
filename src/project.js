@@ -19,7 +19,20 @@ function parseDataUrl(dataUrl) {
 export function projectBook(bookData) {
   const files = new Map();
 
-  const chaptersForBookJson = (bookData.chapters ?? []).map(chapter => ({
+  // Books saved by app versions that predate the chapters migration store
+  // their content under a top-level `scenes` array instead of `chapters`.
+  // Without this fallback, `bookData.chapters ?? []` silently treats such a
+  // book as having zero chapters -- confirmed data loss when this flows
+  // through migrateLegacyRepo, which commits that empty projection straight
+  // over the real content already on GitHub. Mirrors the equivalent
+  // migration desktop's own local-load path already applies.
+  const chapters =
+    bookData.chapters ??
+    (bookData.scenes
+      ? [{ id: 'default', title: 'Chapter 1', scenes: bookData.scenes }]
+      : []);
+
+  const chaptersForBookJson = chapters.map(chapter => ({
     ...chapter,
     scenes: (chapter.scenes ?? []).map(scene => {
       const { content, ...sceneMeta } = scene;
@@ -39,7 +52,7 @@ export function projectBook(bookData) {
     return illustrationMeta;
   });
 
-  const { github, ...bookJsonRest } = bookData;
+  const { github, scenes: _legacyScenes, ...bookJsonRest } = bookData;
   const bookJson = {
     ...bookJsonRest,
     chapters: chaptersForBookJson,

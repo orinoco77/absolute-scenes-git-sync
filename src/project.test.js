@@ -106,6 +106,38 @@ test('handles a book with zero scenes and zero illustrations', () => {
   expect(restored).toEqual(book);
 });
 
+test('projects a pre-chapters legacy book (top-level `scenes`, no `chapters`) instead of silently discarding its content', () => {
+  // Real books saved by app versions that predate the chapters migration
+  // store their content under a top-level `scenes` array, not `chapters`.
+  // projectBook used to read only `bookData.chapters ?? []`, so a legacy
+  // book like this projected to zero scene files and an empty chapters
+  // list in book.json -- confirmed data loss when this flows through
+  // migrateLegacyRepo, which commits that empty projection straight over
+  // the real content on GitHub.
+  const legacyBook = {
+    title: 'Old Book',
+    scenes: [
+      { id: 'sc1', title: 'Scene One', content: 'Real prose that must survive.', notes: '', created: '', modified: '', assignedAuthor: '' },
+    ],
+    illustrations: [],
+    github: {},
+  };
+
+  const files = projectBook(legacyBook);
+
+  expect(files.get('scenes/sc1.md')).toEqual({
+    content: 'Real prose that must survive.',
+    encoding: 'utf-8',
+  });
+  const bookJson = JSON.parse(files.get('book.json').content);
+  expect(bookJson.chapters).toHaveLength(1);
+  expect(bookJson.chapters[0].scenes).toHaveLength(1);
+  expect(bookJson.scenes).toBeUndefined(); // folded into chapters, not duplicated
+
+  const restored = reassembleBook(files);
+  expect(restored.chapters[0].scenes[0].content).toBe('Real prose that must survive.');
+});
+
 test('round-trips multiple chapters and scenes with distinct content', () => {
   const book = makeBook({
     chapters: [
