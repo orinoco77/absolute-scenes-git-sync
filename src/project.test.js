@@ -154,3 +154,9 @@ test('round-trips multiple chapters and scenes with distinct content', () => {
   expect(files.get('scenes/sc3.md').content).toBe('third');
   expect(reassembleBook(files)).toEqual(book);
 });
+
+test('projectBook falls back to top-level scenes when chapters is present but empty', () => {
+  const files = projectBook({ title: 'T', chapters: [], scenes: [{ id: 's1', title: 'S', content: 'text' }] });
+  expect(files.get('scenes/s1.md').content).toBe('text');
+  expect(JSON.parse(files.get('book.json').content).chapters[0].scenes[0].id).toBe('s1');
+});

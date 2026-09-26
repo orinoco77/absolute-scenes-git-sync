@@ -16,6 +16,17 @@ function parseDataUrl(dataUrl) {
   return { mime, ext, base64 };
 }
 
+// A book's chapters, falling back to a legacy top-level `scenes` array when
+// `chapters` is absent OR present-but-empty (old files can carry both, with
+// the real content only in `scenes`).
+export function chaptersWithLegacyFallback(bookData) {
+  if (bookData.chapters?.length) return bookData.chapters;
+  if (bookData.scenes?.length) {
+    return [{ id: 'default', title: 'Chapter 1', scenes: bookData.scenes }];
+  }
+  return bookData.chapters ?? [];
+}
+
 export function projectBook(bookData) {
   const files = new Map();
 
@@ -26,11 +37,7 @@ export function projectBook(bookData) {
   // through migrateLegacyRepo, which commits that empty projection straight
   // over the real content already on GitHub. Mirrors the equivalent
   // migration desktop's own local-load path already applies.
-  const chapters =
-    bookData.chapters ??
-    (bookData.scenes
-      ? [{ id: 'default', title: 'Chapter 1', scenes: bookData.scenes }]
-      : []);
+  const chapters = chaptersWithLegacyFallback(bookData);
 
   const chaptersForBookJson = chapters.map(chapter => ({
     ...chapter,

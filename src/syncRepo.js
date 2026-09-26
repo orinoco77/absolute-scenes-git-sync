@@ -1,5 +1,6 @@
 import { detectRepoLayout, migrateLegacyRepo } from './migration.js';
 import { pushSync, pullSync } from './sync.js';
+import { rescueLocalContent } from './rescue.js';
 import { getRef, getCommit, getTree, bootstrapEmptyRepo } from './apiClient.js';
 
 // Higher-level orchestration over pushSync/pullSync: decides whether a repo
@@ -49,6 +50,23 @@ export async function syncRepo({ repo, token, branch, bookData, lastSyncCommitSh
 
   if (isFirstSyncForThisDevice && (layout === 'legacy' || layout === 'new')) {
     const pulled = await pullSync({ repo, token, branch, cache });
+    // Never let the wholesale pull discard local writing the remote doesn't
+    // have -- e.g. an old-format .book opened against a repo already
+    // hollowed out (empty chapters / empty scene files) by the earlier
+    // migration data-loss bug. Fill it back in and push it on top of the
+    // pulled tip, so the remote becomes whole again instead of the local.
+    const { rescued, bookData: rescuedBook } = rescueLocalContent(bookData, pulled.bookData);
+    if (rescued) {
+      return pushSync({
+        repo,
+        token,
+        branch,
+        bookData: rescuedBook,
+        lastSyncCommitSha: pulled.commitSha,
+        cache,
+        author,
+      });
+    }
     return { commitSha: pulled.commitSha, bookData: pulled.bookData, conflicts: [] };
   }
 

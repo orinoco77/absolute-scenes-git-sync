@@ -133,3 +133,34 @@ test('an empty repo is bootstrapped, then migration is skipped (nothing to migra
   expect(apiClient.bootstrapEmptyRepo).toHaveBeenCalled();
   expect(migration.migrateLegacyRepo).not.toHaveBeenCalled();
 });
+
+test('first-sync pull that would wipe local content pushes the rescued content instead of discarding it', async () => {
+  migration.detectRepoLayout.mockResolvedValue('new');
+  sync.pullSync.mockResolvedValue({
+    commitSha: 'hollow-tip',
+    bookData: { title: 'T', chapters: [{ id: 'c1', title: 'C1', scenes: [{ id: 's1', title: 'S1', content: '' }] }], github: {} },
+  });
+  sync.pushSync.mockResolvedValue({ commitSha: 'pushed', bookData: { title: 'T', chapters: [] }, conflicts: [] });
+  const local = { title: 'T', chapters: [{ id: 'c1', title: 'C1', scenes: [{ id: 's1', title: 'S1', content: 'my real work' }] }] };
+
+  const result = await syncRepo(baseArgs({ lastSyncCommitSha: undefined, bookData: local }));
+
+  const pushCall = sync.pushSync.mock.calls[0][0];
+  expect(pushCall.bookData.chapters[0].scenes[0].content).toBe('my real work');
+  expect(pushCall.lastSyncCommitSha).toBe('hollow-tip');
+  expect(result.commitSha).toBe('pushed');
+});
+
+test('first-sync pull with nothing to rescue still returns the pulled book untouched', async () => {
+  migration.detectRepoLayout.mockResolvedValue('new');
+  const pulled = { title: 'T', chapters: [{ id: 'c1', title: 'C1', scenes: [{ id: 's1', content: 'remote' }] }] };
+  sync.pullSync.mockResolvedValue({ commitSha: 'tip', bookData: pulled });
+
+  const result = await syncRepo(baseArgs({
+    lastSyncCommitSha: undefined,
+    bookData: { title: 'T', chapters: [{ id: 'c1', scenes: [{ id: 's1', content: 'local' }] }] },
+  }));
+
+  expect(sync.pushSync).not.toHaveBeenCalled();
+  expect(result.bookData).toBe(pulled);
+});
