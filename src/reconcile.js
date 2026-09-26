@@ -1,4 +1,4 @@
-import { projectBook, reassembleBook } from './project.js';
+import { projectBook, reassembleBook, sceneIdFromPath } from './project.js';
 import { mergeSceneContent } from './mergeScene.js';
 import { mergeBookMetadata } from './mergeMetadata.js';
 
@@ -99,7 +99,7 @@ export function reconcilePostSyncState(base, local, remote) {
       merged.set(path, { content, encoding: 'utf-8' });
       if (conflict) {
         conflicts.push({
-          sceneId: path.replace('scenes/', '').replace('.md', '')
+          sceneId: sceneIdFromPath(path)
         });
       }
     } else {

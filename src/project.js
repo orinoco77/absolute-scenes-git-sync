@@ -27,6 +27,56 @@ export function chaptersWithLegacyFallback(bookData) {
   return bookData.chapters ?? [];
 }
 
+// Scene text lives at scenes/<prefix><sceneId>.md; an inactive revision's
+// text at scenes/<prefix><sceneId>.rev-<revId>.md. prefix is '' for the
+// active draft and 'drafts/<draftId>/' for inactive drafts.
+const scenePath = (prefix, sceneId) => `scenes/${prefix}${sceneId}.md`;
+const revPath = (prefix, sceneId, revId) => `scenes/${prefix}${sceneId}.rev-${revId}.md`;
+
+export function sceneIdFromPath(path) {
+  const name = path.split('/').pop().replace(/\.md$/, '');
+  return name.replace(/\.rev-.*$/, '');
+}
+
+function projectChapters(chapters, prefix, files) {
+  return chapters.map(chapter => ({
+    ...chapter,
+    scenes: (chapter.scenes ?? []).map(scene => {
+      const { content, revisions, ...sceneMeta } = scene;
+      if (content !== undefined) {
+        files.set(scenePath(prefix, scene.id), { content, encoding: 'utf-8' });
+      }
+      if (revisions) {
+        sceneMeta.revisions = revisions.map(rev => {
+          const { content: revContent, ...revMeta } = rev;
+          if (revContent !== undefined) {
+            files.set(revPath(prefix, scene.id, rev.id), { content: revContent, encoding: 'utf-8' });
+          }
+          return revMeta;
+        });
+      }
+      return sceneMeta;
+    }),
+  }));
+}
+
+function assembleChapters(chapters, prefix, files) {
+  return (chapters ?? []).map(chapter => ({
+    ...chapter,
+    scenes: (chapter.scenes ?? []).map(scene => {
+      const file = files.get(scenePath(prefix, scene.id));
+      const rebuilt = { ...scene, content: file ? file.content : '' };
+      if (scene.revisions) {
+        rebuilt.revisions = scene.revisions.map(rev => {
+          const revFile = files.get(revPath(prefix, scene.id, rev.id));
+          return { ...rev, content: revFile ? revFile.content : '' };
+        });
+      }
+      return rebuilt;
+    }),
+  }));
+}
+
 export function projectBook(bookData) {
   const files = new Map();
 
@@ -39,16 +89,15 @@ export function projectBook(bookData) {
   // migration desktop's own local-load path already applies.
   const chapters = chaptersWithLegacyFallback(bookData);
 
-  const chaptersForBookJson = chapters.map(chapter => ({
-    ...chapter,
-    scenes: (chapter.scenes ?? []).map(scene => {
-      const { content, ...sceneMeta } = scene;
-      if (content !== undefined) {
-        files.set(`scenes/${scene.id}.md`, { content, encoding: 'utf-8' });
-      }
-      return sceneMeta;
-    }),
-  }));
+  const chaptersForBookJson = projectChapters(chapters, '', files);
+
+  // Inactive drafts' scene text lives under scenes/drafts/<draftId>/.
+  const draftsForBookJson = bookData.drafts
+    ? bookData.drafts.map(draft => ({
+        ...draft,
+        chapters: projectChapters(draft.chapters ?? [], `drafts/${draft.id}/`, files),
+      }))
+    : undefined;
 
   const illustrationsForBookJson = (bookData.illustrations ?? []).map(illustration => {
     const { imageData, ...illustrationMeta } = illustration;
@@ -63,6 +112,7 @@ export function projectBook(bookData) {
   const bookJson = {
     ...bookJsonRest,
     chapters: chaptersForBookJson,
+    ...(draftsForBookJson ? { drafts: draftsForBookJson } : {}),
     illustrations: illustrationsForBookJson,
   };
 
@@ -73,13 +123,13 @@ export function projectBook(bookData) {
 export function reassembleBook(files) {
   const bookJson = JSON.parse(files.get('book.json').content);
 
-  const chapters = (bookJson.chapters ?? []).map(chapter => ({
-    ...chapter,
-    scenes: (chapter.scenes ?? []).map(scene => {
-      const file = files.get(`scenes/${scene.id}.md`);
-      return { ...scene, content: file ? file.content : '' };
-    }),
-  }));
+  const chapters = assembleChapters(bookJson.chapters, '', files);
+  const drafts = bookJson.drafts
+    ? bookJson.drafts.map(draft => ({
+        ...draft,
+        chapters: assembleChapters(draft.chapters, `drafts/${draft.id}/`, files),
+      }))
+    : undefined;
 
   const illustrations = (bookJson.illustrations ?? []).map(illustration => {
     const found = [...files.keys()].find(path => path.startsWith(`illustrations/${illustration.id}.`));
@@ -95,6 +145,7 @@ export function reassembleBook(files) {
   return {
     ...bookJson,
     chapters,
+    ...(drafts ? { drafts } : {}),
     illustrations,
     github: {},
   };
