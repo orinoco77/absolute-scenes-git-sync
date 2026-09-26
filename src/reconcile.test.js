@@ -253,3 +253,72 @@ test('an edit to a scene whose draft was parked concurrently stays at the old pa
   const parked = bookData.drafts.find(d => d.id === 'd1');
   expect(parked.chapters[0].scenes[0].content).toBe('original content');
 });
+
+// KNOWN LIMITATION (documented in README): scenes/<id>.md always holds the
+// ACTIVE revision, so switching revision rewrites that path with another
+// revision's text. A concurrent edit to the previously active revision is
+// then three-way merged into the newly active one, silently. Pinned here; if
+// merging is made revision-aware, update this test.
+test('an edit to a revision that was concurrently switched away from lands in the new active revision (known limitation)', () => {
+  const r1Text = 'l1\nl2\nl3\nl4\nl5';
+  const r2Text = 'l1 rewritten\nl2\nl3\nl4\nl5';
+  const scene = makeBook().chapters[0].scenes[0];
+  const withScene = s => ({ ...makeBook(), chapters: [{ ...makeBook().chapters[0], scenes: [s] }] });
+  const base = withScene({
+    ...scene,
+    content: r1Text,
+    activeRevision: { id: 'r1', label: 'Revision 1', created: 'x' },
+    revisions: [{ id: 'r2', label: 'Alt', created: 'y', content: r2Text }]
+  });
+  const local = withScene({
+    ...scene,
+    content: r2Text,
+    activeRevision: { id: 'r2', label: 'Alt', created: 'y' },
+    revisions: [{ id: 'r1', label: 'Revision 1', created: 'x', content: r1Text }]
+  });
+  const remote = withScene({
+    ...base.chapters[0].scenes[0],
+    content: 'l1\nl2\nl3\nl4\nl5 REMOTE'
+  });
+
+  const { bookData, conflicts } = reconcilePostSyncState(base, local, remote);
+
+  const merged = bookData.chapters[0].scenes[0];
+  expect(conflicts).toEqual([]);
+  expect(merged.activeRevision.id).toBe('r2');
+  expect(merged.content).toBe('l1 rewritten\nl2\nl3\nl4\nl5 REMOTE');
+  expect(merged.revisions.find(r => r.id === 'r1').content).toBe(r1Text);
+});
+
+// KNOWN LIMITATION (documented in README): activeDraft merges as one field
+// while chapters and drafts[] merge by id, so two sides switching to
+// DIFFERENT drafts leave one draft's chapters mixed into the active tree and
+// that draft missing from drafts[]. Text survives; structure does not.
+test('two sides switching to different drafts mixes their chapters (known limitation)', () => {
+  const ch = id => ({ id, title: id, scenes: [{ id: `${id}-s`, title: 'S', content: id }] });
+  const draft = (id, chapters) => ({ id, name: id, created: id, parts: [], chapters });
+  const base = {
+    ...makeBook(),
+    chapters: [ch('c1')],
+    activeDraft: { id: 'd1', name: 'd1', created: 'd1' },
+    drafts: [draft('d2', [ch('c2')]), draft('d3', [ch('c3')])]
+  };
+  const local = {
+    ...base,
+    chapters: [ch('c2')],
+    activeDraft: { id: 'd2', name: 'd2', created: 'd2' },
+    drafts: [draft('d1', [ch('c1')]), draft('d3', [ch('c3')])]
+  };
+  const remote = {
+    ...base,
+    chapters: [ch('c3')],
+    activeDraft: { id: 'd3', name: 'd3', created: 'd3' },
+    drafts: [draft('d1', [ch('c1')]), draft('d2', [ch('c2')])]
+  };
+
+  const { bookData } = reconcilePostSyncState(base, local, remote);
+
+  expect(bookData.activeDraft.id).toBe('d2');
+  expect(bookData.chapters.map(c => c.id).sort()).toEqual(['c2', 'c3']);
+  expect(bookData.drafts.map(d => d.id)).toEqual(['d1']);
+});

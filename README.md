@@ -19,9 +19,18 @@ and `illustrations/…`, exactly as before.
 
 ## Known limitations
 
-**Switch drafts on one device at a time between syncs.** Switching draft
-moves each scene's file between `scenes/…` and `scenes/drafts/<draftId>/…`.
-Paths merge independently, so if another device edits a scene at its old
-path while this device switches drafts, that edit stays at the old path and
-is not carried into the parked draft. It remains in the repository history.
-`reconcile.test.js` pins this behaviour.
+Files merge by path, but switching a draft or revision changes which text
+lives at which path. Until merging is made draft/revision-aware, **switch
+drafts or revisions on one device at a time, and sync before switching on
+another device.** Each case below is pinned by a test in `reconcile.test.js`.
+
+- **Revision switch + concurrent edit to the old revision:** the edit is
+  three-way merged into the *newly active* revision without any conflict
+  being reported. The revision that was actually edited stays unchanged.
+- **Draft switch + concurrent edit to a scene in the old draft:** the edit
+  stays at the old path. It is not carried into the parked draft, but it
+  remains in the repository history.
+- **Two devices switch to different drafts:** one side's `activeDraft` wins.
+  The other draft's chapters are mixed into the active draft, and that draft
+  disappears from the draft list. No text is lost, but the structure has to
+  be sorted out by hand.
