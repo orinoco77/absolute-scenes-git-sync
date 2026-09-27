@@ -52,22 +52,36 @@ function mergeArrayWithIds(base, local, remote, tieBreak, mergeItem) {
   return result;
 }
 
+// Field-by-field merge over the union of keys, with named nested arrays
+// merged by id. Keeps fields this package doesn't know about (e.g.
+// activeRevision) instead of whitelisting them away.
+function mergeFields(base, local, remote, tieBreak, nested = {}) {
+  const keys = new Set([...Object.keys(base), ...Object.keys(local), ...Object.keys(remote)]);
+  const merged = { id: base.id };
+  for (const key of keys) {
+    if (key === 'id') continue;
+    merged[key] = nested[key]
+      ? mergeArrayWithIds(base[key], local[key], remote[key], tieBreak, nested[key])
+      : mergeSimpleField(base[key], local[key], remote[key], tieBreak);
+  }
+  return merged;
+}
+
 function mergeSceneMeta(base, local, remote, tieBreak) {
-  return {
-    id: base.id,
-    title: mergeSimpleField(base.title, local.title, remote.title, tieBreak),
-    notes: mergeSimpleField(base.notes, local.notes, remote.notes, tieBreak),
-    created: mergeSimpleField(base.created, local.created, remote.created, tieBreak),
-    modified: mergeSimpleField(base.modified, local.modified, remote.modified, tieBreak),
-    assignedAuthor: mergeSimpleField(base.assignedAuthor, local.assignedAuthor, remote.assignedAuthor, tieBreak),
-  };
+  return mergeFields(base, local, remote, tieBreak, { revisions: mergeSimpleItem });
 }
 
 function mergeChapter(base, local, remote, tieBreak) {
+  return mergeFields(base, local, remote, tieBreak, { scenes: mergeSceneMeta });
+}
+
+function mergeDraft(base, local, remote, tieBreak) {
   return {
     id: base.id,
-    title: mergeSimpleField(base.title, local.title, remote.title, tieBreak),
-    scenes: mergeArrayWithIds(base.scenes, local.scenes, remote.scenes, tieBreak, mergeSceneMeta),
+    name: mergeSimpleField(base.name, local.name, remote.name, tieBreak),
+    created: mergeSimpleField(base.created, local.created, remote.created, tieBreak),
+    chapters: mergeArrayWithIds(base.chapters, local.chapters, remote.chapters, tieBreak, mergeChapter),
+    parts: mergeArrayWithIds(base.parts, local.parts, remote.parts, tieBreak, mergeSimpleItem),
   };
 }
 
@@ -83,8 +97,11 @@ function mergeSimpleItem(base, local, remote, tieBreak) {
   return merged;
 }
 
+// Stripped by projectBook (github) or legacy-only (scenes); never carried.
+const NOT_CARRIED = new Set(['github', 'scenes']);
+
 export function mergeBookMetadata(base, local, remote, tieBreak) {
-  return {
+  const merged = {
     title: mergeSimpleField(base.title, local.title, remote.title, tieBreak),
     author: mergeSimpleField(base.author, local.author, remote.author, tieBreak),
     template: mergeSimpleField(base.template, local.template, remote.template, tieBreak),
@@ -104,4 +121,17 @@ export function mergeBookMetadata(base, local, remote, tieBreak) {
     backgroundFolders: mergeArrayWithIds(base.backgroundFolders, local.backgroundFolders, remote.backgroundFolders, tieBreak, mergeSimpleItem),
     illustrations: mergeArrayWithIds(base.illustrations, local.illustrations, remote.illustrations, tieBreak, mergeSimpleItem),
   };
+
+  // Absent on all three sides (legacy book) -> left out, so output is unchanged.
+  if (base.drafts || local.drafts || remote.drafts) {
+    merged.drafts = mergeArrayWithIds(base.drafts, local.drafts, remote.drafts, tieBreak, mergeDraft);
+  }
+
+  // activeDraft and any other top-level field not handled above.
+  const keys = new Set([...Object.keys(base), ...Object.keys(local), ...Object.keys(remote)]);
+  for (const key of keys) {
+    if (key in merged || NOT_CARRIED.has(key)) continue;
+    merged[key] = mergeSimpleField(base[key], local[key], remote[key], tieBreak);
+  }
+  return merged;
 }

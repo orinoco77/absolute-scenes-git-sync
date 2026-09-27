@@ -118,3 +118,32 @@ test('illustrations merge the same way as other id-keyed arrays (union of additi
   expect(result.illustrations).toHaveLength(1);
   expect(result.illustrations[0]).toEqual(newIllustration);
 });
+
+test('preserves activeRevision and revision metadata through a merge', () => {
+  const scene = { id: 's', title: 'S', notes: '', created: 'c', modified: 'm', assignedAuthor: null,
+    activeRevision: { id: 'r1', label: 'Revision 1', created: 'x' },
+    revisions: [{ id: 'r2', label: 'Alt', created: 'y' }] };
+  const base = { chapters: [{ id: 'c', title: 'C', scenes: [scene] }] };
+  const merged = mergeBookMetadata(base, base, base, 'local');
+  expect(merged.chapters[0].scenes[0].activeRevision).toEqual(scene.activeRevision);
+  expect(merged.chapters[0].scenes[0].revisions).toEqual(scene.revisions);
+});
+
+test('merges drafts and activeDraft by id, and keeps unknown top-level fields', () => {
+  const base = { title: 'T', activeDraft: { id: 'd1', name: 'Draft 1', created: 'a' }, drafts: [], futureField: 1 };
+  const local = { ...base, drafts: [{ id: 'd2', name: 'Two', created: 'b', chapters: [], parts: [] }] };
+  const remote = { ...base, activeDraft: { id: 'd1', name: 'Renamed', created: 'a' } };
+  const merged = mergeBookMetadata(base, local, remote, 'local');
+  expect(merged.drafts.map(d => d.id)).toEqual(['d2']);
+  expect(merged.activeDraft.name).toBe('Renamed');
+  expect(merged.futureField).toBe(1);
+});
+
+test('a revision added on each side is kept from both', () => {
+  const mk = revs => ({ chapters: [{ id: 'c', title: 'C', scenes: [{ id: 's', title: 'S', revisions: revs }] }] });
+  const base = mk([]);
+  const local = mk([{ id: 'a', label: 'A', created: '1' }]);
+  const remote = mk([{ id: 'b', label: 'B', created: '2' }]);
+  const merged = mergeBookMetadata(base, local, remote, 'local');
+  expect(merged.chapters[0].scenes[0].revisions.map(r => r.id).sort()).toEqual(['a', 'b']);
+});

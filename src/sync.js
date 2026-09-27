@@ -1,5 +1,5 @@
 import * as apiClient from './apiClient.js';
-import { projectBook, reassembleBook } from './project.js';
+import { projectBook, reassembleBook, sceneIdFromPath } from './project.js';
 import { computeGitBlobSha } from './blobSha.js';
 import { mergeSceneContent } from './mergeScene.js';
 import { mergeBookMetadata } from './mergeMetadata.js';
@@ -76,7 +76,7 @@ async function buildAttempt({ repo, token, bookData, baseTreeSha, remoteTreeSha,
       const baseFile = baseEntry ? await apiClient.getBlob({ repo, token, sha: baseEntry.sha }).then(b => atob_utf8(b.content)) : undefined;
       const { content, conflict } = mergeSceneContent(baseFile, local.content, remoteFile?.content ?? '');
       mergedFiles.set(path, { content, encoding: 'utf-8' });
-      if (conflict) conflicts.push({ sceneId: path.replace('scenes/', '').replace('.md', '') });
+      if (conflict) conflicts.push({ sceneId: sceneIdFromPath(path) });
     } else if (path === 'book.json') {
       const remoteFile = await fetchRemoteFile({ repo, token, remoteTreeByPath, path });
       const baseJson = baseEntry ? JSON.parse(await apiClient.getBlob({ repo, token, sha: baseEntry.sha }).then(b => atob_utf8(b.content))) : {};

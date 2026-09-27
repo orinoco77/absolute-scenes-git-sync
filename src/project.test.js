@@ -1,4 +1,4 @@
-import { projectBook, reassembleBook } from './project.js';
+import { projectBook, reassembleBook, sceneIdFromPath } from './project.js';
 
 function makeBook(overrides = {}) {
   return {
@@ -159,4 +159,79 @@ test('projectBook falls back to top-level scenes when chapters is present but em
   const files = projectBook({ title: 'T', chapters: [], scenes: [{ id: 's1', title: 'S', content: 'text' }] });
   expect(files.get('scenes/s1.md').content).toBe('text');
   expect(JSON.parse(files.get('book.json').content).chapters[0].scenes[0].id).toBe('s1');
+});
+
+const bookWithDraftsAndRevisions = () => ({
+  title: 'T',
+  chapters: [
+    {
+      id: 'c1',
+      title: 'C1',
+      scenes: [
+        {
+          id: 's1',
+          title: 'One',
+          content: 'active text',
+          activeRevision: { id: 'r1', label: 'Revision 1', created: 'x' },
+          revisions: [{ id: 'r2', label: 'Alt', created: 'y', content: 'alt text' }]
+        }
+      ]
+    }
+  ],
+  parts: [],
+  activeDraft: { id: 'd1', name: 'Draft 1', created: 'a' },
+  drafts: [
+    {
+      id: 'd2',
+      name: 'Draft 2',
+      created: 'b',
+      parts: [],
+      chapters: [
+        {
+          id: 'c2',
+          title: 'C1',
+          scenes: [
+            {
+              id: 's2',
+              title: 'One',
+              content: 'draft two text',
+              activeRevision: { id: 'r3', label: 'Revision 1', created: 'z' },
+              revisions: [{ id: 'r4', label: 'Other', created: 'w', content: 'draft two alt' }]
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  illustrations: []
+});
+
+test('projects revisions and inactive drafts to per-file markdown', () => {
+  const files = projectBook(bookWithDraftsAndRevisions());
+  expect(files.get('scenes/s1.md').content).toBe('active text');
+  expect(files.get('scenes/s1.rev-r2.md').content).toBe('alt text');
+  expect(files.get('scenes/drafts/d2/s2.md').content).toBe('draft two text');
+  expect(files.get('scenes/drafts/d2/s2.rev-r4.md').content).toBe('draft two alt');
+  const bookJson = JSON.parse(files.get('book.json').content);
+  expect(JSON.stringify(bookJson)).not.toMatch(/alt text|draft two/);
+  expect(bookJson.drafts[0].id).toBe('d2');
+});
+
+test('reassembleBook restores drafts and revisions exactly', () => {
+  const book = bookWithDraftsAndRevisions();
+  const back = reassembleBook(projectBook(book));
+  expect(back.chapters).toEqual(book.chapters);
+  expect(back.drafts).toEqual(book.drafts);
+  expect(back.activeDraft).toEqual(book.activeDraft);
+});
+
+test('a book without drafts or revisions projects exactly as before', () => {
+  const files = projectBook({ chapters: [{ id: 'c', title: 'C', scenes: [{ id: 's', title: 'S', content: 'x' }] }] });
+  expect([...files.keys()].sort()).toEqual(['book.json', 'scenes/s.md']);
+});
+
+test('sceneIdFromPath strips folders, extension and revision suffix', () => {
+  expect(sceneIdFromPath('scenes/s1.md')).toBe('s1');
+  expect(sceneIdFromPath('scenes/s1.rev-r2.md')).toBe('s1');
+  expect(sceneIdFromPath('scenes/drafts/d2/s2.rev-r4.md')).toBe('s2');
 });
